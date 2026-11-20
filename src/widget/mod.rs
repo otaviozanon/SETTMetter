@@ -10,7 +10,7 @@ mod menu;
 mod tray;
 
 use crate::device::{Reading, Status, Tracker};
-use crate::{bluetooth, corsair, corsair_slipstream, delux, device, diag, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, wide, xbox};
+use crate::{areson, bluetooth, corsair, corsair_slipstream, delux, device, diag, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, wide, xbox};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
@@ -178,6 +178,7 @@ fn worker(controller: usize, rx: Receiver<()>) {
     };
     let mut logi = logitech::Logitech::new();
     let mut delux = delux::Delux::default();
+    let mut areson = areson::Areson::default();
     let mut mchose = mchose::Mchose::default();
     let mut mchose_mice = mchose_mouse::MchoseMice::default();
     let mut corsair = corsair::Corsair::default();
@@ -196,6 +197,7 @@ fn worker(controller: usize, rx: Receiver<()>) {
         let mut obs = logi.scan(&api);
         obs.extend(playstation::scan(&api));
         obs.extend(delux.scan(&api));
+        obs.extend(areson.scan(&api));
         obs.extend(mchose.scan(&api));
         obs.extend(mchose_mice.scan(&api));
         obs.extend(corsair.scan(&api));

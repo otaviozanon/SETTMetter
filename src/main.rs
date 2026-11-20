@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod areson;
 mod bluetooth;
 mod corsair;
 mod corsair_slipstream;
@@ -63,6 +64,7 @@ fn main() {
             let _ = xbox::scan(); // first call only starts controller enumeration
             std::thread::sleep(std::time::Duration::from_millis(2500));
             obs.extend(delux.scan(&api));
+            obs.extend(areson::Areson::default().scan(&api));
             obs.extend(mchose::Mchose::default().scan(&api));
             obs.extend(mchose_mouse::MchoseMice::default().scan(&api));
             obs.extend(corsair::Corsair::default().scan(&api));
