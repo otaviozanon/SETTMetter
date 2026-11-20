@@ -31,6 +31,9 @@ const WM_APP_MENU: u32 = WM_APP + 2;
 const TIMER_PLACE: usize = 1;
 /// WM_POWERBROADCAST: resumed from sleep/hibernate.
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
+/// Win11 secondary taskbars draw the clock with no HWND and have no TrayNotifyWnd, so the
+/// widget reserves this width (at 100% DPI) instead of measuring one.
+const CLOCK_RESERVE: i32 = 88;
 
 /// HID++ is cheap to poll. Bluetooth reads wake the device's radio and HeadsetControl spawns
 /// a process, so poll those less often.
@@ -503,7 +506,7 @@ unsafe fn taskbar_layout(tray: HWND) -> render::Layout {
 
 /// Keeps the widget next to the notification area (left of it on a horizontal taskbar, above
 /// it on a vertical one) and above the taskbar's XAML content.
-unsafe fn place() {
+pub(super) unsafe fn place() {
     let (widget, (width, height), rendered) = with(|a| (a.widget, a.size, a.layout));
     if widget.is_null() || IsWindow(widget) == 0 {
         return;
@@ -530,15 +533,17 @@ unsafe fn place() {
     let clock = FindWindowExW(tray, null_mut(), wide("SystemTray.OmniButton").as_ptr(), null());
     let has_notify = !notify.is_null() && GetWindowRect(notify, &mut nr) != 0 && nr.right > nr.left;
     let has_clock = !has_notify && !clock.is_null() && GetWindowRect(clock, &mut nr) != 0 && nr.right > nr.left;
-    let margin = 4 * GetDpiForWindow(tray).max(96) as i32 / 96;
+    let dpi = GetDpiForWindow(tray).max(96) as i32;
+    let margin = 4 * dpi / 96;
+    let offset = settings::widget_offset() * dpi / 96;
     let (x, y) = match rendered {
         Some(render::Layout::Column { .. }) => {
-            let bottom = if has_notify || has_clock { nr.top } else { tr.bottom };
-            (0, bottom - tr.top - height - margin)
+            let bottom = if has_notify || has_clock { nr.top } else { tr.bottom - CLOCK_RESERVE * dpi / 96 };
+            (0, bottom - tr.top - height - margin - offset)
         }
         _ => {
-            let right = if has_notify || has_clock { nr.left } else { tr.right };
-            (right - tr.left - width - margin, 0)
+            let right = if has_notify || has_clock { nr.left } else { tr.right - CLOCK_RESERVE * dpi / 96 };
+            (right - tr.left - width - margin - offset, 0)
         }
     };
 

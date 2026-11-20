@@ -26,6 +26,7 @@ struct Cache {
     cpu_alert_threshold: u32,
     gpu_alert_threshold: u32,
     screen: u32,
+    widget_offset: i32,
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -42,6 +43,7 @@ fn cache() -> Cache {
             cpu_alert_threshold: read_temp_threshold("CpuAlertThreshold"),
             gpu_alert_threshold: read_temp_threshold("GpuAlertThreshold"),
             screen: read_dword(APP_KEY, "Screen").unwrap_or(0),
+            widget_offset: read_dword(APP_KEY, "WidgetOffset").map(|v| (v as i32).clamp(-800, 800)).unwrap_or(0),
         });
     }
     guard.clone().unwrap()
@@ -265,6 +267,17 @@ pub fn screen() -> u32 {
 
 pub fn set_screen(number: u32) {
     write_dword(APP_KEY, "Screen", number);
+    invalidate_cache();
+}
+
+/// Manual horizontal (or vertical, on a side-docked taskbar) offset in px, applied on top of
+/// the automatic placement: positive moves the widget away from the notification area.
+pub fn widget_offset() -> i32 {
+    cache().widget_offset
+}
+
+pub fn set_widget_offset(offset: i32) {
+    write_dword(APP_KEY, "WidgetOffset", offset.clamp(-800, 800) as u32);
     invalidate_cache();
 }
 

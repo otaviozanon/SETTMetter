@@ -38,6 +38,11 @@ const CMD_GPU_THRESHOLD_BASE: usize = 780;
 const CMD_PRESET_BASE: usize = 800;
 /// One entry per screen, keyed by its Windows display number (1-based), for the screen submenu.
 const CMD_SCREEN_BASE: usize = 900;
+/// Manual placement: shift the widget 16 px away from the notification area, back toward it,
+/// or reset.
+const CMD_OFFSET_LEFT: usize = 950;
+const CMD_OFFSET_RIGHT: usize = 951;
+const CMD_OFFSET_RESET: usize = 952;
 
 /// \u00b0C choices offered in the CPU/GPU temperature-alert submenus.
 const THRESHOLD_CHOICES: [u32; 7] = [60, 70, 75, 80, 85, 90, 95];
@@ -209,6 +214,21 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     labels.extend(screen_labels);
     labels.push(screen_label);
 
+    // Manual nudge for when the automatic spot (left of the clock) covers something.
+    let offset = settings::widget_offset();
+    let position_menu = CreatePopupMenu();
+    let offset_label = wide(&format!("Offset: {offset} px"));
+    let left_label = wide("Move left (+16 px)");
+    let right_label = wide("Move right (-16 px)");
+    let reset_label = wide("Reset offset");
+    AppendMenuW(position_menu, MF_STRING | MF_GRAYED, 0, offset_label.as_ptr());
+    AppendMenuW(position_menu, MF_STRING, CMD_OFFSET_LEFT, left_label.as_ptr());
+    AppendMenuW(position_menu, MF_STRING, CMD_OFFSET_RIGHT, right_label.as_ptr());
+    AppendMenuW(position_menu, MF_STRING, CMD_OFFSET_RESET, reset_label.as_ptr());
+    let position_label = wide("Position");
+    AppendMenuW(menu, MF_POPUP, position_menu as usize, position_label.as_ptr());
+    labels.extend([offset_label, left_label, right_label, reset_label, position_label]);
+
     // Quick presets: set sensor_mask + icon_mask together in one click.
     let preset_menu = CreatePopupMenu();
     let mut preset_labels = Vec::new();
@@ -332,6 +352,18 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         }
         c if (CMD_SCREEN_BASE..CMD_SCREEN_BASE + 32).contains(&c) => {
             super::select_screen((c - CMD_SCREEN_BASE) as u32);
+        }
+        CMD_OFFSET_LEFT => {
+            settings::set_widget_offset(settings::widget_offset() + 16);
+            super::place();
+        }
+        CMD_OFFSET_RIGHT => {
+            settings::set_widget_offset(settings::widget_offset() - 16);
+            super::place();
+        }
+        CMD_OFFSET_RESET => {
+            settings::set_widget_offset(0);
+            super::place();
         }
         c if c >= CMD_DEVICE_BASE => {
             if let Some(r) = devices.get(c - CMD_DEVICE_BASE) {
