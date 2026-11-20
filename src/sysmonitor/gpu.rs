@@ -1,5 +1,4 @@
 //! Discrete GPU detection (DXGI) and per-adapter temperature via D3DKMT or NVML.
-//! Ported from TraySense's `init_gpu`/D3DKMT+NVML temperature path.
 
 use std::ffi::c_void;
 use std::ptr::null_mut;
@@ -28,13 +27,13 @@ pub(crate) unsafe fn load_fn<T: Copy>(module: *mut c_void, name: &str) -> Option
 
 const KMTQAITYPE_ADAPTERPERFDATA: u32 = 62;
 
-/// Discrete/primary GPU chosen the same way as TraySense `init_gpu`: largest dedicated VRAM
-/// among non-software, non-Microsoft-Basic-Render adapters.
+/// Discrete/primary GPU: largest dedicated VRAM among non-software,
+/// non-Microsoft-Basic-Render adapters.
 #[allow(dead_code)] // `luid`/`name` kept for debugging/diagnostics, not read on the hot path.
 pub(crate) struct Gpu {
     luid: LUID,
     /// `luid_0xHHHHHHHH_0xLLLLLLLL`, used to filter PDH `GPU Engine`/`GPU Adapter Memory`
-    /// instance names down to this adapter only (same as TraySense `has_luid`).
+    /// instance names down to this adapter only.
     pub(crate) luid_str: String,
     name: String,
     pub(crate) vram_total: u64,

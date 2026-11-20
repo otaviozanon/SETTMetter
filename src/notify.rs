@@ -69,7 +69,7 @@ fn temp_alert_step(alerted: bool, temp: Option<f64>, limit: f64, rearm_margin: f
 
 impl TempAlerts {
     /// `gpu_temps` is one reading per detected adapter; alerts if any of them crosses the
-    /// threshold (TraySense doesn't have per-adapter alerting to copy, so this is new).
+    /// threshold, so a multi-GPU machine gets one alert per adapter.
     pub fn check(&mut self, cpu_temp: Option<f64>, gpu_temps: &[Option<f64>]) {
         if !settings::alerts_enabled() {
             return;

@@ -1,12 +1,12 @@
 //! Performance Data Helper (PDH) query for CPU thermal-zone, GPU engine and GPU memory
-//! wildcard counters, same set as TraySense's `build_query`.
+//! wildcard counters.
 
 use windows_sys::Win32::System::Performance::*;
 
 const PDH_FMT_NOCAP100: u32 = 0x0000_8000;
 
 /// One PDH wildcard counter's formatted samples (`\GPU Engine(*)\...`, etc.), re-fetched into a
-/// growable buffer the same way TraySense's `pdh_items` grows `g_buf` on `PDH_MORE_DATA`.
+/// growable buffer, grown on `PDH_MORE_DATA`.
 pub(crate) struct PdhWildcard {
     pub(crate) counter: isize,
     /// u64-backed so the buffer is 8-byte aligned (`PDH_FMT_COUNTERVALUE_ITEM_W` holds a pointer).
@@ -43,8 +43,8 @@ pub(crate) fn good(item: &PDH_FMT_COUNTERVALUE_ITEM_W) -> bool {
     item.FmtValue.CStatus == PDH_CSTATUS_VALID_DATA || item.FmtValue.CStatus == PDH_CSTATUS_NEW_DATA
 }
 
-/// Reads a PDH counter's wide instance name as a lossy `String` (TraySense's `has_luid` scans
-/// this for the adapter's LUID substring).
+/// Reads a PDH counter's wide instance name as a lossy `String`, used to match an adapter's
+/// LUID substring.
 pub(crate) fn instance_name(item: &PDH_FMT_COUNTERVALUE_ITEM_W) -> String {
     if item.szName.is_null() {
         return String::new();
@@ -59,7 +59,7 @@ pub(crate) fn instance_name(item: &PDH_FMT_COUNTERVALUE_ITEM_W) -> String {
 }
 
 /// PDH query bundling the CPU-temperature thermal zone counter and, when a discrete GPU was
-/// detected, the GPU usage/VRAM counters — same set as TraySense's `build_query`.
+/// detected, the GPU usage/VRAM counters.
 pub(crate) struct PdhQuery {
     query: isize,
     pub(crate) therm: PdhWildcard,

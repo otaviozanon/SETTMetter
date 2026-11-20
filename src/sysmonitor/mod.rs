@@ -1,7 +1,5 @@
-//! System monitor data layer: CPU/RAM/GPU/VRAM usage and CPU/GPU/SSD temperatures.
-//! Ported 1:1 (same formulas/thresholds) from TraySense's `traysense.c` data-reading
-//! functions (`read_cpu`, `read_ram`, `read_therm`/PDH, `init_gpu`/DXGI+D3DKMT/NVML,
-//! `pio_init`/`pio_temp` via the PawnIO driver, `read_disk`).
+//! System monitor data layer: CPU/RAM/GPU/VRAM usage and CPU/GPU/SSD temperatures, read from
+//! PDH counters, DXGI + D3DKMT/NVML, the PawnIO driver (MSR/SMN) and the storage IOCTLs.
 
 mod disk;
 mod gpu;
@@ -34,9 +32,8 @@ pub const SENSOR_NAMES: [(&str, u32); 4] = [
 ];
 
 // Icon-glyph bits: one per group (CPU, GPU, RAM, VRAM, SSD), independent of the sensor
-// show/hide bits above. This isn't in TraySense's bar mode (which always draws the group glyph
-// when any of its values are shown) — it's an extra per-group toggle so each glyph can be
-// turned off without hiding the numbers next to it.
+// show/hide bits above — an extra per-group toggle so each glyph can be turned off without
+// hiding the numbers next to it.
 pub const ICON_CPU: u32 = 1 << 0;
 pub const ICON_GPU: u32 = 1 << 1;
 pub const ICON_RAM: u32 = 1 << 2;
@@ -127,8 +124,8 @@ fn ft(f: FILETIME) -> u64 {
     ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64
 }
 
-/// Orchestrates every sensor, mirroring TraySense's global `sample()`: call [`SysMonitor::new`]
-/// once, then [`SysMonitor::sample`] on each tick of the widget's poll timer.
+/// Orchestrates every sensor: call [`SysMonitor::new`] once, then [`SysMonitor::sample`] on each
+/// tick of the widget's poll timer.
 pub struct SysMonitor {
     prev_idle: u64,
     prev_total: u64,
@@ -269,7 +266,7 @@ impl SysMonitor {
         }
         s.cpu_temp = self.pio.as_ref().and_then(PawnIo::temp).or(s.cpu_temp);
 
-        // SSD/HDD temperature changes slowly; TraySense only re-reads it every 5th sample.
+        // SSD/HDD temperature changes slowly, so it's re-read every 5th sample.
         self.disk_tick = self.disk_tick.wrapping_add(1);
         if self.disk_tick.is_multiple_of(5) || self.last_disk_temp.is_none() {
             self.last_disk_temp = self.disk.as_ref().and_then(Disk::temp);
@@ -337,8 +334,8 @@ fn top_processes(pdh: &mut PdhQuery) -> (TopProcess, TopProcess, PidNames) {
 }
 
 /// Sums `\GPU Engine(pid_<pid>_luid_...)\Utilization Percentage` per PID (across every adapter
-/// and engine type) and reports the process using the GPU the hardest, same PID-from-instance-
-/// name trick TraySense doesn't need (it has no per-process breakdown) but Windows exposes.
+/// and engine type) and reports the process using the GPU the hardest, from the PID Windows puts
+/// in the instance name.
 fn top_gpu_process(pdh: &mut PdhQuery, pid_names: &PidNames) -> TopProcess {
     let mut by_pid: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
     for item in pdh.eng.items().iter().filter(|i| good(i)) {

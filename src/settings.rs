@@ -140,7 +140,7 @@ pub fn toggle_hidden(id: &str) {
 }
 
 /// Bitmask of which system-monitor sensors are shown (see `sysmonitor::ALL_SENSORS` for bits).
-/// All on by default, like TraySense's `g_mask = (1u << M_N) - 1`.
+/// All on by default.
 pub fn sensor_mask() -> u32 {
     cache().sensor_mask
 }
@@ -212,8 +212,7 @@ pub fn toggle_icon(bit: u32) {
     set_icon_mask(icon_mask() ^ bit);
 }
 
-/// Sample/refresh interval in milliseconds for the system monitor: 1000, 2000 (default) or
-/// 5000, same choices as TraySense's "Refresh rate" submenu.
+/// Sample/refresh interval in milliseconds for the system monitor: 1000, 2000 (default) or 5000.
 pub fn refresh_interval_ms() -> u64 {
     cache().refresh_interval_ms
 }

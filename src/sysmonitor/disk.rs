@@ -1,5 +1,5 @@
-//! Physical disk SSD/HDD temperature via `IOCTL_STORAGE_QUERY_PROPERTY`, same bounds-check as
-//! TraySense's `read_disk`.
+//! Physical disk SSD/HDD temperature via `IOCTL_STORAGE_QUERY_PROPERTY`, with the sensor values
+//! bounds-checked before they're reported.
 
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
@@ -12,7 +12,7 @@ use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
 const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x0056_0000;
 
 /// Physical disk handle for SSD/HDD temperature, opened for the Windows system volume's disk
-/// number the same way as TraySense's `init_disk`.
+/// number.
 pub(crate) struct Disk {
     handle: HANDLE,
 }
@@ -57,7 +57,7 @@ impl Disk {
         (handle != INVALID_HANDLE_VALUE).then_some(Disk { handle })
     }
 
-    /// Max reported temperature across sensors, °C, same bounds-check as TraySense `read_disk`.
+    /// Max reported temperature across sensors, °C, bounds-checked.
     pub(crate) fn temp(&self) -> Option<f64> {
         let mut query: STORAGE_PROPERTY_QUERY = unsafe { std::mem::zeroed() };
         query.PropertyId = StorageDeviceTemperatureProperty;

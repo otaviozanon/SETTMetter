@@ -109,7 +109,7 @@ pub fn run() {
         let (tx, rx) = mpsc::channel();
         let _ = WAKE.set(tx);
         let controller_addr = controller as usize;
-        // 64 KiB stacks (like TraySense's sampler thread) instead of Rust's 2 MiB default:
+        // 64 KiB stacks instead of Rust's 2 MiB default:
         // neither loop recurses or keeps large locals, so the extra reserved address space
         // and committed guard pages were pure waste.
         const STACK: usize = 64 * 1024;
@@ -234,8 +234,8 @@ fn worker(controller: usize, rx: Receiver<()>) {
     }
 }
 
-/// Polls CPU/RAM/GPU/VRAM usage and CPU/GPU/SSD temperatures once a second, same cadence as
-/// TraySense's main timer, and redraws on every sample (usage changes fast enough to want it).
+/// Polls CPU/RAM/GPU/VRAM usage and CPU/GPU/SSD temperatures once a second, and redraws on every
+/// sample (usage changes fast enough to want it).
 fn sysmonitor_worker(controller: usize) {
     if DEMO.load(Ordering::Relaxed) {
         return;

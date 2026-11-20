@@ -104,7 +104,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     // System monitor: one checkable item per sensor. CPU/RAM usage and CPU/SSD temperature are
     // single global toggles; GPU usage, GPU temperature and VRAM usage get one checkbox per
     // discrete adapter (see `hidden_gpu_sensors` in settings.rs), since a system can have more
-    // than one GPU. Temperature items show "(no sensor found)" like TraySense when the
+    // than one GPU. Temperature items show "(no sensor found)" when the
     // corresponding sensor isn't available.
     let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
     let mask = settings::sensor_mask();

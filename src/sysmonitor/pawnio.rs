@@ -1,5 +1,4 @@
-//! PawnIO-backed MSR/SMN reader for CPU die temperature (Intel/AMD), ported from TraySense's
-//! `pio_init`/`pio_temp`.
+//! PawnIO-backed MSR/SMN reader for CPU die temperature (Intel/AMD).
 
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
@@ -13,7 +12,7 @@ const AMD_BIN: &[u8] = include_bytes!("../../assets/pawnio/AMDFamily17.bin");
 const IOCTL_PIO_LOAD: u32 = 0xA1B2_2084;
 const IOCTL_PIO_EXEC: u32 = 0xA1B2_2104;
 
-/// CPU vendor detected via CPUID leaf 0 EBX, same check as TraySense (`pio_init`).
+/// CPU vendor detected via CPUID leaf 0 EBX.
 fn cpu_vendor() -> u8 {
     let ebx = std::arch::x86_64::__cpuid(0).ebx;
     if ebx == 0x756e_6547 {
@@ -104,7 +103,7 @@ impl PawnIo {
         (ok != 0 && got >= 8).then_some(out)
     }
 
-    /// Returns a plausible die temperature in °C, same formulas as TraySense `pio_temp`.
+    /// Returns a plausible die temperature in °C.
     pub(crate) fn temp(&self) -> Option<f64> {
         let t = if self.vendor == 1 {
             let v = Self::exec_raw(self.handle, "ioctl_read_msr", 0x1B1)?;
