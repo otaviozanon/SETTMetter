@@ -30,6 +30,7 @@ Right-click the widget (or the fallback tray icon) for:
 - **Presets** — apply a sensor/icon combination in one click.
 - **CPU/GPU alert thresholds** — 60–95 °C, independently per component.
 - **Refresh rate** — how often system sensors are sampled.
+- **Screen** — which monitor's taskbar the widget is docked to (secondary taskbars need "Show my taskbar on all displays").
 - **Icons** — which icons are drawn next to the values.
 - **Show usage history graph**, **Refresh now**, **Low battery alerts**, **Start with Windows**, **Probe an unsupported device (60 s)**, **Copy diagnostics**, **Exit**.
 

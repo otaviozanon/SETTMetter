@@ -36,6 +36,8 @@ const CMD_CPU_THRESHOLD_BASE: usize = 760;
 const CMD_GPU_THRESHOLD_BASE: usize = 780;
 /// One entry per `PRESETS` for the quick-preset submenu.
 const CMD_PRESET_BASE: usize = 800;
+/// One entry per screen, keyed by its Windows display number (1-based), for the screen submenu.
+const CMD_SCREEN_BASE: usize = 900;
 
 /// \u00b0C choices offered in the CPU/GPU temperature-alert submenus.
 const THRESHOLD_CHOICES: [u32; 7] = [60, 70, 75, 80, 85, 90, 95];
@@ -180,6 +182,33 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     AppendMenuW(menu, MF_POPUP, rate_menu as usize, rate_label.as_ptr());
     labels.extend([r1, r2, r5, rate_label]);
 
+    // Which monitor's taskbar hosts the widget. Only screens with a taskbar are listed; secondary
+    // ones need "Show my taskbar on all displays" in Windows Settings. Numbers match the Windows
+    // display numbers (Settings > Display).
+    let screen_menu = CreatePopupMenu();
+    let mut screen_labels = Vec::new();
+    let screens = super::screens();
+    let current = settings::screen();
+    let selected = if screens.iter().any(|(number, _)| *number == current) {
+        current
+    } else {
+        screens.iter().find(|(_, primary)| *primary).map(|(number, _)| *number).unwrap_or(0)
+    };
+    for (number, _) in &screens {
+        let label = wide(&format!("Screen {number}"));
+        AppendMenuW(screen_menu, MF_STRING | checked(*number == selected), CMD_SCREEN_BASE + *number as usize, label.as_ptr());
+        screen_labels.push(label);
+    }
+    if screens.is_empty() {
+        let label = wide("No taskbar found");
+        AppendMenuW(screen_menu, MF_STRING | MF_GRAYED, 0, label.as_ptr());
+        screen_labels.push(label);
+    }
+    let screen_label = wide("Screen");
+    AppendMenuW(menu, MF_POPUP, screen_menu as usize, screen_label.as_ptr());
+    labels.extend(screen_labels);
+    labels.push(screen_label);
+
     // Quick presets: set sensor_mask + icon_mask together in one click.
     let preset_menu = CreatePopupMenu();
     let mut preset_labels = Vec::new();
@@ -300,6 +329,9 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
             let gpu_count = sys_snapshot().map(|s| s.gpus.len()).unwrap_or(0);
             settings::set_hidden_gpu_sensors(gpu_preset.hidden_list(gpu_count));
             redraw();
+        }
+        c if (CMD_SCREEN_BASE..CMD_SCREEN_BASE + 32).contains(&c) => {
+            super::select_screen((c - CMD_SCREEN_BASE) as u32);
         }
         c if c >= CMD_DEVICE_BASE => {
             if let Some(r) = devices.get(c - CMD_DEVICE_BASE) {

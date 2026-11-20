@@ -25,6 +25,7 @@ struct Cache {
     refresh_interval_ms: u64,
     cpu_alert_threshold: u32,
     gpu_alert_threshold: u32,
+    screen: u32,
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -40,6 +41,7 @@ fn cache() -> Cache {
             refresh_interval_ms: read_refresh_interval_ms(),
             cpu_alert_threshold: read_temp_threshold("CpuAlertThreshold"),
             gpu_alert_threshold: read_temp_threshold("GpuAlertThreshold"),
+            screen: read_dword(APP_KEY, "Screen").unwrap_or(0),
         });
     }
     guard.clone().unwrap()
@@ -252,6 +254,18 @@ pub fn set_gpu_alert_threshold(celsius: u32) {
 
 fn read_temp_threshold(name: &str) -> u32 {
     read_dword(APP_KEY, name).filter(|&v| (40..=110).contains(&v)).unwrap_or(85)
+}
+
+/// Windows display number (`\\.\DISPLAY1` = 1) of the monitor whose taskbar holds the widget.
+/// 0 means the primary taskbar; `widget::find_tray` also falls back to it when the selected
+/// screen is gone (unplugged).
+pub fn screen() -> u32 {
+    cache().screen
+}
+
+pub fn set_screen(number: u32) {
+    write_dword(APP_KEY, "Screen", number);
+    invalidate_cache();
 }
 
 /// E.g. "Windows 11 24H2 build 26100.2033", for diagnostics.

@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, SetProcessWorkingSetSize};
 use windows_sys::Win32::UI::Controls::*;
@@ -277,16 +278,97 @@ fn readings() -> Vec<Reading> {
     READINGS.lock().unwrap().clone().unwrap_or_default()
 }
 
+/// Taskbar holding the widget: the one on the screen picked in the menu, or the primary one
+/// when no screen was picked or the picked screen is gone (unplugged).
 unsafe fn find_tray() -> HWND {
-    FindWindowW(wide("Shell_TrayWnd").as_ptr(), null())
+    let primary = FindWindowW(wide("Shell_TrayWnd").as_ptr(), null());
+    let wanted = settings::screen();
+    if wanted == 0 {
+        return primary;
+    }
+    taskbars()
+        .into_iter()
+        .find(|(number, _)| *number == wanted)
+        .map_or(primary, |(_, tray)| tray)
+}
+
+/// Every taskbar on screen, with the Windows display number of its monitor. Secondary taskbars
+/// only exist while "Show my taskbar on all displays" is on (Settings > Personalization > Taskbar).
+unsafe fn taskbars() -> Vec<(u32, HWND)> {
+    let mut trays = Vec::new();
+    EnumWindows(Some(collect_tray_window), &mut trays as *mut _ as LPARAM);
+    let mut screens: Vec<_> = trays
+        .into_iter()
+        .filter_map(|tray| Some((display_number(MonitorFromWindow(tray, MONITOR_DEFAULTTONEAREST))?, tray)))
+        .collect();
+    screens.sort_by_key(|(number, _)| *number);
+    screens
+}
+
+unsafe extern "system" fn collect_tray_window(hwnd: HWND, data: LPARAM) -> BOOL {
+    let mut class = [0u16; 32];
+    let len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+    let name = String::from_utf16_lossy(&class[..len]);
+    if name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd" {
+        (*(data as *mut Vec<HWND>)).push(hwnd);
+    }
+    1
+}
+
+/// Windows display number from a monitor handle, e.g. `1` for `\\.\DISPLAY1` (the number shown
+/// in Settings > Display).
+unsafe fn display_number(hmon: HMONITOR) -> Option<u32> {
+    let mut info: MONITORINFOEXW = zeroed();
+    info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    if GetMonitorInfoW(hmon, &mut info as *mut _ as *mut MONITORINFO) == 0 {
+        return None;
+    }
+    let len = info.szDevice.iter().position(|c| *c == 0).unwrap_or(info.szDevice.len());
+    let name = String::from_utf16_lossy(&info.szDevice[..len]);
+    name.strip_prefix(r"\\.\DISPLAY")?.parse().ok()
+}
+
+/// Screens whose taskbar can host the widget, with whether each is the primary monitor.
+pub(super) unsafe fn screens() -> Vec<(u32, bool)> {
+    let primary = MonitorFromWindow(FindWindowW(wide("Shell_TrayWnd").as_ptr(), null()), MONITOR_DEFAULTTONEAREST);
+    taskbars()
+        .into_iter()
+        .map(|(number, tray)| (number, MonitorFromWindow(tray, MONITOR_DEFAULTTONEAREST) == primary))
+        .collect()
+}
+
+/// Moves the widget (and its tooltip) to another screen's taskbar.
+pub(super) unsafe fn select_screen(number: u32) {
+    settings::set_screen(number);
+    destroy_widget();
+    ensure_widget();
+}
+
+unsafe fn destroy_widget() {
+    let (widget, tooltip) = with(|a| {
+        let (widget, tooltip) = (a.widget, a.tooltip);
+        a.widget = null_mut();
+        a.tooltip = null_mut();
+        a.size = (0, 0);
+        a.layout = None;
+        (widget, tooltip)
+    });
+    if !tooltip.is_null() {
+        DestroyWindow(tooltip);
+    }
+    if !widget.is_null() {
+        DestroyWindow(widget);
+    }
 }
 
 unsafe fn ensure_widget() {
+    let tray = find_tray();
     let widget = with(|a| a.widget);
-    if !widget.is_null() && IsWindow(widget) != 0 {
+    // Still attached to the right taskbar? A taskbar restart or another screen recreates it.
+    if !widget.is_null() && IsWindow(widget) != 0 && GetParent(widget) == tray {
         return;
     }
-    let tray = find_tray();
+    destroy_widget();
     if tray.is_null() {
         return; // Explorer not up yet; the timer retries.
     }
@@ -302,10 +384,7 @@ unsafe fn ensure_widget() {
         GetModuleHandleW(null()),
         null(),
     );
-    let (controller, old_tip) = with(|a| (a.controller, a.tooltip));
-    if !old_tip.is_null() {
-        DestroyWindow(old_tip); // its tool was the previous (dead) widget
-    }
+    let controller = with(|a| a.controller);
     let tip = create_tooltip(controller, w);
     with(|a| {
         a.widget = w;
@@ -446,15 +525,19 @@ unsafe fn place() {
     GetWindowRect(tray, &mut tr);
     let mut nr: RECT = zeroed();
     let notify = FindWindowExW(tray, null_mut(), wide("TrayNotifyWnd").as_ptr(), null());
+    // Win11 secondary taskbars have no TrayNotifyWnd; there the clock is rightmost, so keep the
+    // widget left of it too.
+    let clock = FindWindowExW(tray, null_mut(), wide("SystemTray.OmniButton").as_ptr(), null());
     let has_notify = !notify.is_null() && GetWindowRect(notify, &mut nr) != 0 && nr.right > nr.left;
+    let has_clock = !has_notify && !clock.is_null() && GetWindowRect(clock, &mut nr) != 0 && nr.right > nr.left;
     let margin = 4 * GetDpiForWindow(tray).max(96) as i32 / 96;
     let (x, y) = match rendered {
         Some(render::Layout::Column { .. }) => {
-            let bottom = if has_notify { nr.top } else { tr.bottom };
+            let bottom = if has_notify || has_clock { nr.top } else { tr.bottom };
             (0, bottom - tr.top - height - margin)
         }
         _ => {
-            let right = if has_notify { nr.left } else { tr.right };
+            let right = if has_notify || has_clock { nr.left } else { tr.right };
             (right - tr.left - width - margin, 0)
         }
     };
