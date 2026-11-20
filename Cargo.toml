@@ -1,0 +1,60 @@
+[package]
+name = "SETTMetter"
+version = "1.0.0"
+edition = "2021"
+description = "Wireless device battery levels and system monitoring on the Windows taskbar"
+license = "MIT"
+
+[dependencies]
+hidapi = "2.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# WinRT Bluetooth APIs.
+windows = { version = "0.58", features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Data_Xml_Dom",
+    "Devices_Power",
+    "Foundation",
+    "Foundation_Collections",
+    "Gaming_Input",
+    "Storage_Streams",
+    "System_Power",
+    "UI_Notifications",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Com",
+] }
+# Plain Win32 (window, GDI, registry, SetupAPI, clipboard).
+windows-sys = { version = "0.59", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+# Icon, version info and manifest (see build.rs).
+winresource = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,76 @@
+name: Device report
+description: Tell us whether a device works, so it can be added to the "tested" list (or fixed).
+title: "[Device] "
+labels: ["device report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Reports like this are how the supported-devices table grows.
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: Brand and model.
+      placeholder: Logitech G Pro X Superlight 2
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - Logitech receiver (Lightspeed / Unifying / Bolt)
+        - USB dongle (headset)
+        - Bluetooth
+        - USB cable
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Does it work?
+      options:
+        - "Yes, shows the right level"
+        - "Shows, but the level is wrong"
+        - "Not shown at all"
+    validations:
+      required: true
+  - type: input
+    id: expected
+    attributes:
+      label: Expected level
+      description: What the vendor app (G HUB, Windows Settings…) shows, if the level is wrong or the device isn't shown.
+      placeholder: "G HUB says 80%, taskbar-battery says 70%"
+  - type: textarea
+    id: once
+    attributes:
+      label: Diagnostics
+      description: |
+        Very helpful, especially if the device isn't shown. Right-click the widget → **Copy diagnostics** and paste here.
+        It has no Bluetooth addresses or names, serial numbers or file paths
+        (see `%LOCALAPPDATA%\taskbar-battery\diagnostics.log`).
+      render: text
+  - type: textarea
+    id: probe
+    attributes:
+      label: Probe (only if the device isn't shown)
+      description: |
+        Right-click the widget → **Probe an unsupported device (60 s)**. Keep the device on and use it, but don't type.
+        When the text file opens, paste it here, and write the battery level its own app (or LED) showed at that moment
+        in the field above. A second probe at a different level helps a lot.
+        It holds USB ids, product names and raw HID reports; no serial numbers or paths.
+        Full list: [what the probe captures](https://github.com/renanleonel/windows-taskbar-battery#probing-an-unsupported-device).
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: taskbar-battery version
+      placeholder: v0.7.0
+  - type: input
+    id: windows
+    attributes:
+      label: Windows build
+      description: Run `winver`.
+      placeholder: Windows 11 24H2 (26100.2033)
