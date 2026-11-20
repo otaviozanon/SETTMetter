@@ -42,16 +42,6 @@ Hover the widget for each device's full name and status; the tooltip also lists 
 - **Sensors** — PDH performance counters for CPU/RAM/disk, DXGI + D3DKMT/NVML for GPU usage, VRAM and temperature across every adapter, and a PawnIO-based MSR reader for CPU package temperature.
 - **Settings** — hot-path values (hidden devices/sensors, masks, refresh interval) are cached in memory and reloaded only after a menu toggle, instead of hitting the registry on every redraw.
 
-## Building
-
-Requires the Rust toolchain with the MSVC target, Visual Studio Build Tools and the Windows SDK.
-
-```powershell
-cargo build --release --locked
-```
-
-`scripts\build.ps1` wraps the same build, regenerating the icon first. The executable lands in `target\release\SETTMetter.exe`.
-
 ## Credits
 
 - [taskbar-battery](https://github.com/renanleonel/windows-taskbar-battery) by Renan Leonel — the base this project was forked from.
