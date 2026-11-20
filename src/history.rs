@@ -102,11 +102,13 @@ const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 /// Cycles through a small, readable palette for however many GPUs are detected.
 const GPU_PALETTE: [u32; 4] = [rgb(0x4F, 0x8F, 0xFF), rgb(0xFF, 0xB4, 0x54), rgb(0x7C, 0xE3, 0x8B), rgb(0xD1, 0x8C, 0xFF)];
 
+type PointGetter = Box<dyn Fn(&Point) -> Option<f64>>;
+
 /// A plotted line: display name, color, and an accessor into a `Point`.
 struct Series {
     name: String,
     color: u32,
-    get: Box<dyn Fn(&Point) -> Option<f64>>,
+    get: PointGetter,
 }
 
 fn series_list(gpu_count: usize) -> Vec<Series> {
@@ -137,7 +139,7 @@ unsafe fn paint(hwnd: HWND) {
 
     draw_scene(buf_dc, bw, bh);
 
-    SetStretchBltMode(hdc, HALFTONE as i32);
+    SetStretchBltMode(hdc, HALFTONE);
     SetBrushOrgEx(hdc, 0, 0, null_mut());
     StretchBlt(hdc, 0, 0, w, h, buf_dc, 0, 0, bw, bh, SRCCOPY);
 
@@ -149,7 +151,7 @@ unsafe fn paint(hwnd: HWND) {
 
 unsafe fn fill_ellipse(dc: HDC, rc: &RECT, color: u32) {
     let brush = CreateSolidBrush(color);
-    let pen = CreatePen(PS_SOLID as i32, 1, color);
+    let pen = CreatePen(PS_SOLID, 1, color);
     let old_brush = SelectObject(dc, brush);
     let old_pen = SelectObject(dc, pen);
     Ellipse(dc, rc.left, rc.top, rc.right, rc.bottom);
@@ -213,7 +215,7 @@ unsafe fn draw_scene(dc: HDC, w: i32, h: i32) {
     let (pw, ph) = ((plot.right - plot.left).max(1), (plot.bottom - plot.top).max(1));
 
     // Gridlines at 0/25/50/75/100%, with a label on the left.
-    let grid_pen = CreatePen(PS_SOLID as i32, s.max(1), rgb(0x2C, 0x30, 0x3B));
+    let grid_pen = CreatePen(PS_SOLID, s.max(1), rgb(0x2C, 0x30, 0x3B));
     let old_pen = SelectObject(dc, grid_pen);
     SetTextColor(dc, rgb(0x8A, 0x90, 0x9C));
     for step in 0..=4 {
@@ -266,7 +268,7 @@ unsafe fn draw_scene(dc: HDC, w: i32, h: i32) {
         FillRect(fill_dc, &rc, black);
         DeleteObject(black);
         let area_brush = CreateSolidBrush(sr.color);
-        let area_pen = CreatePen(PS_SOLID as i32, 1, sr.color);
+        let area_pen = CreatePen(PS_SOLID, 1, sr.color);
         let old_brush = SelectObject(fill_dc, area_brush);
         let old_area_pen = SelectObject(fill_dc, area_pen);
         Polygon(fill_dc, poly.as_ptr(), poly.len() as i32);
@@ -281,7 +283,7 @@ unsafe fn draw_scene(dc: HDC, w: i32, h: i32) {
         DeleteDC(fill_dc);
 
         // The line itself, on top of its own fill.
-        let pen = CreatePen(PS_SOLID as i32, (2 * s).max(1), sr.color);
+        let pen = CreatePen(PS_SOLID, (2 * s).max(1), sr.color);
         let old = SelectObject(dc, pen);
         Polyline(dc, pts.as_ptr(), pts.len() as i32);
         SelectObject(dc, old);

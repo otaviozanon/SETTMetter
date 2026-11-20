@@ -127,70 +127,6 @@ fn ft(f: FILETIME) -> u64 {
     ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn gpu(pct: f64, temp: f64, vram: f64) -> GpuReading {
-        GpuReading { pct: Some(pct), temp: Some(temp), vram_pct: Some(vram), vram_used_gb: 0.0, vram_total_gb: 0.0 }
-    }
-
-    fn full_snapshot() -> Snapshot {
-        Snapshot {
-            cpu_pct: Some(10.0),
-            ram_pct: Some(20.0),
-            ram_used_gb: 0.0,
-            ram_total_gb: 0.0,
-            gpus: vec![gpu(30.0, 60.0, 40.0), gpu(31.0, 61.0, 41.0)],
-            cpu_temp: Some(50.0),
-            disk_temp: Some(35.0),
-            top_cpu_process: None,
-            top_ram_process: None,
-            top_gpu_process: None,
-        }
-    }
-
-    #[test]
-    fn mask_hides_only_the_unset_bits() {
-        let snap = full_snapshot().apply(BIT_CPU | BIT_RAM, &[]);
-        assert_eq!(snap.cpu_pct, Some(10.0));
-        assert_eq!(snap.ram_pct, Some(20.0));
-        assert_eq!(snap.cpu_temp, None);
-        assert_eq!(snap.disk_temp, None);
-    }
-
-    #[test]
-    fn all_sensors_mask_keeps_everything() {
-        let snap = full_snapshot().apply(ALL_SENSORS, &[]);
-        assert_eq!(snap.cpu_pct, Some(10.0));
-        assert_eq!(snap.cpu_temp, Some(50.0));
-        assert_eq!(snap.ram_pct, Some(20.0));
-        assert_eq!(snap.disk_temp, Some(35.0));
-    }
-
-    #[test]
-    fn hidden_gpu_ids_only_affect_their_own_adapter_and_field() {
-        // Hide only adapter 0's usage and adapter 1's temperature; everything else survives.
-        let hidden = vec!["gpu0".to_string(), "gputemp1".to_string()];
-        let snap = full_snapshot().apply(ALL_SENSORS, &hidden);
-        assert_eq!(snap.gpus[0].pct, None);
-        assert_eq!(snap.gpus[0].temp, Some(60.0));
-        assert_eq!(snap.gpus[0].vram_pct, Some(40.0));
-        assert_eq!(snap.gpus[1].pct, Some(31.0));
-        assert_eq!(snap.gpus[1].temp, None);
-        assert_eq!(snap.gpus[1].vram_pct, Some(41.0));
-    }
-
-    #[test]
-    fn all_hidden_true_only_when_every_value_is_none() {
-        let mostly_hidden = full_snapshot().apply(0, &["gpu0".into(), "gputemp0".into(), "vram0".into(), "gpu1".into(), "gputemp1".into(), "vram1".into()]);
-        assert!(mostly_hidden.all_hidden());
-
-        let one_left = full_snapshot().apply(BIT_CPU, &["gpu0".into(), "gputemp0".into(), "vram0".into(), "gpu1".into(), "gputemp1".into(), "vram1".into()]);
-        assert!(!one_left.all_hidden());
-    }
-}
-
 /// Orchestrates every sensor, mirroring TraySense's global `sample()`: call [`SysMonitor::new`]
 /// once, then [`SysMonitor::sample`] on each tick of the widget's poll timer.
 pub struct SysMonitor {
@@ -252,8 +188,7 @@ impl SysMonitor {
     /// VRAM checkboxes are unchecked in the menu — avoids keeping DXGI/NVML "hot" every tick
     /// for data nobody sees.
     pub fn sample(&mut self, hidden_gpu: &[String]) -> Snapshot {
-        let mut s = Snapshot::default();
-        s.cpu_pct = self.read_cpu();
+        let mut s = Snapshot { cpu_pct: self.read_cpu(), ..Default::default() };
         let (ram_pct, ram_used, ram_total) = Self::read_ram();
         s.ram_pct = ram_pct;
         s.ram_used_gb = ram_used;
@@ -336,7 +271,7 @@ impl SysMonitor {
 
         // SSD/HDD temperature changes slowly; TraySense only re-reads it every 5th sample.
         self.disk_tick = self.disk_tick.wrapping_add(1);
-        if self.disk_tick % 5 == 0 || self.last_disk_temp.is_none() {
+        if self.disk_tick.is_multiple_of(5) || self.last_disk_temp.is_none() {
             self.last_disk_temp = self.disk.as_ref().and_then(Disk::temp);
         }
         s.disk_temp = self.last_disk_temp;
@@ -364,7 +299,10 @@ fn strip_instance_suffix(name: &str) -> &str {
 /// the busiest-CPU and busiest-RAM processes, and returns a PID -> display-name map (built from
 /// the same sample) for `top_gpu_process` to reuse, since GPU-Engine instance names only carry
 /// the PID, not the process name.
-fn top_processes(pdh: &mut PdhQuery) -> (Option<(String, f64)>, Option<(String, f64)>, std::collections::HashMap<u32, String>) {
+type TopProcess = Option<(String, f64)>;
+type PidNames = std::collections::HashMap<u32, String>;
+
+fn top_processes(pdh: &mut PdhQuery) -> (TopProcess, TopProcess, PidNames) {
     const SKIP: [&str; 2] = ["_total", "idle"];
     let mut pid_names = std::collections::HashMap::new();
     for item in pdh.proc_id.items().iter().filter(|i| good(i)) {
@@ -401,7 +339,7 @@ fn top_processes(pdh: &mut PdhQuery) -> (Option<(String, f64)>, Option<(String, 
 /// Sums `\GPU Engine(pid_<pid>_luid_...)\Utilization Percentage` per PID (across every adapter
 /// and engine type) and reports the process using the GPU the hardest, same PID-from-instance-
 /// name trick TraySense doesn't need (it has no per-process breakdown) but Windows exposes.
-fn top_gpu_process(pdh: &mut PdhQuery, pid_names: &std::collections::HashMap<u32, String>) -> Option<(String, f64)> {
+fn top_gpu_process(pdh: &mut PdhQuery, pid_names: &PidNames) -> TopProcess {
     let mut by_pid: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
     for item in pdh.eng.items().iter().filter(|i| good(i)) {
         let name = instance_name(item);
@@ -428,4 +366,68 @@ unsafe fn zeroed3() -> (FILETIME, FILETIME, FILETIME) {
 
 unsafe fn zeroed<T>() -> T {
     std::mem::zeroed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gpu(pct: f64, temp: f64, vram: f64) -> GpuReading {
+        GpuReading { pct: Some(pct), temp: Some(temp), vram_pct: Some(vram), vram_used_gb: 0.0, vram_total_gb: 0.0 }
+    }
+
+    fn full_snapshot() -> Snapshot {
+        Snapshot {
+            cpu_pct: Some(10.0),
+            ram_pct: Some(20.0),
+            ram_used_gb: 0.0,
+            ram_total_gb: 0.0,
+            gpus: vec![gpu(30.0, 60.0, 40.0), gpu(31.0, 61.0, 41.0)],
+            cpu_temp: Some(50.0),
+            disk_temp: Some(35.0),
+            top_cpu_process: None,
+            top_ram_process: None,
+            top_gpu_process: None,
+        }
+    }
+
+    #[test]
+    fn mask_hides_only_the_unset_bits() {
+        let snap = full_snapshot().apply(BIT_CPU | BIT_RAM, &[]);
+        assert_eq!(snap.cpu_pct, Some(10.0));
+        assert_eq!(snap.ram_pct, Some(20.0));
+        assert_eq!(snap.cpu_temp, None);
+        assert_eq!(snap.disk_temp, None);
+    }
+
+    #[test]
+    fn all_sensors_mask_keeps_everything() {
+        let snap = full_snapshot().apply(ALL_SENSORS, &[]);
+        assert_eq!(snap.cpu_pct, Some(10.0));
+        assert_eq!(snap.cpu_temp, Some(50.0));
+        assert_eq!(snap.ram_pct, Some(20.0));
+        assert_eq!(snap.disk_temp, Some(35.0));
+    }
+
+    #[test]
+    fn hidden_gpu_ids_only_affect_their_own_adapter_and_field() {
+        // Hide only adapter 0's usage and adapter 1's temperature; everything else survives.
+        let hidden = vec!["gpu0".to_string(), "gputemp1".to_string()];
+        let snap = full_snapshot().apply(ALL_SENSORS, &hidden);
+        assert_eq!(snap.gpus[0].pct, None);
+        assert_eq!(snap.gpus[0].temp, Some(60.0));
+        assert_eq!(snap.gpus[0].vram_pct, Some(40.0));
+        assert_eq!(snap.gpus[1].pct, Some(31.0));
+        assert_eq!(snap.gpus[1].temp, None);
+        assert_eq!(snap.gpus[1].vram_pct, Some(41.0));
+    }
+
+    #[test]
+    fn all_hidden_true_only_when_every_value_is_none() {
+        let mostly_hidden = full_snapshot().apply(0, &["gpu0".into(), "gputemp0".into(), "vram0".into(), "gpu1".into(), "gputemp1".into(), "vram1".into()]);
+        assert!(mostly_hidden.all_hidden());
+
+        let one_left = full_snapshot().apply(BIT_CPU, &["gpu0".into(), "gputemp0".into(), "vram0".into(), "gpu1".into(), "gputemp1".into(), "vram1".into()]);
+        assert!(!one_left.all_hidden());
+    }
 }

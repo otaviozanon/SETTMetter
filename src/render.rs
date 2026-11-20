@@ -127,7 +127,8 @@ pub unsafe fn draw(
             let text = if snap.cpu_pct.is_some() { format!("{t:.0}\u{b0}C") } else { format!("CPU {t:.0}\u{b0}C") };
             (text, if hot(Some(t)) { red } else { fg })
         });
-        let mut groups: Vec<(&str, u32, Vec<(String, u32)>)> = vec![
+        type Group<'a> = (&'a str, u32, Vec<(String, u32)>);
+        let mut groups: Vec<Group> = vec![
             (ICON_CPU_GLYPH, crate::sysmonitor::ICON_CPU, [snap.cpu_pct.map(|p| (format!("CPU {p:.0}%"), fg)), cpu_temp_label].into_iter().flatten().collect()),
             (ICON_RAM_GLYPH, crate::sysmonitor::ICON_RAM, snap.ram_pct.map(|p| (format!("RAM {p:.0}%"), fg)).into_iter().collect()),
         ];

@@ -41,7 +41,7 @@ impl PawnIo {
         let handle = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                (GENERIC_READ | GENERIC_WRITE) as u32,
+                GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 null(),
                 OPEN_EXISTING,

@@ -76,9 +76,11 @@ pub(crate) struct PdhQuery {
 fn pdh_add(query: isize, path: &str) -> isize {
     let wide = crate::wide(path);
     let mut counter = 0isize;
-    (unsafe { PdhAddEnglishCounterW(query, wide.as_ptr(), 0, &mut counter) } == 0)
-        .then_some(counter)
-        .unwrap_or(0)
+    if unsafe { PdhAddEnglishCounterW(query, wide.as_ptr(), 0, &mut counter) } == 0 {
+        counter
+    } else {
+        0
+    }
 }
 
 impl PdhQuery {

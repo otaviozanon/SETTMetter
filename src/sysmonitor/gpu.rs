@@ -8,7 +8,7 @@ use windows_sys::Win32::System::LibraryLoader::*;
 
 pub(crate) fn load_lib(name: &str) -> *mut c_void {
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe { LoadLibraryExW(wide.as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) as *mut c_void }
+    unsafe { LoadLibraryExW(wide.as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32) }
 }
 
 pub(crate) fn proc_addr(module: *mut c_void, name: &str) -> *mut c_void {
@@ -108,7 +108,7 @@ impl Gpu {
             found.push((luid, desc.DedicatedVideoMemory as u64, name));
         }
 
-        let gdi = unsafe { GetModuleHandleW(crate::wide("gdi32.dll").as_ptr()) } as *mut c_void;
+        let gdi = unsafe { GetModuleHandleW(crate::wide("gdi32.dll").as_ptr()) };
         let open: Option<unsafe extern "system" fn(*mut c_void) -> i32> =
             unsafe { load_fn(gdi, "D3DKMTOpenAdapterFromLuid") };
         let query: Option<unsafe extern "system" fn(*mut c_void) -> i32> =
@@ -170,7 +170,7 @@ impl Nvml {
                 .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect();
-            nv = unsafe { LoadLibraryExW(wide.as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) as *mut c_void };
+            nv = unsafe { LoadLibraryExW(wide.as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) };
         }
         if nv.is_null() {
             return None;

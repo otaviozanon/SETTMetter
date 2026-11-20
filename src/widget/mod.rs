@@ -394,7 +394,7 @@ unsafe fn redraw() {
         }
     }
     set_tooltip_text(&lines);
-    let all_hidden = items.is_empty() && sys.as_ref().map_or(true, |s| s.all_hidden());
+    let all_hidden = items.is_empty() && sys.as_ref().is_none_or(|s| s.all_hidden());
     tray::set_tray_icon(all_hidden);
     let size = if items.is_empty() && sys.is_none() {
         (0, 0)
