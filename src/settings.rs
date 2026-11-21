@@ -93,6 +93,16 @@ pub fn alerts_enabled() -> bool {
     read_dword(APP_KEY, "LowBatteryAlerts") != Some(0)
 }
 
+/// Whether the CPU-temperature driver prompt was already shown (either answer), so it appears
+/// once instead of on every launch. The menu entry stays as the way back.
+pub fn pawnio_prompted() -> bool {
+    read_dword(APP_KEY, "PawnIOPrompted") == Some(1)
+}
+
+pub fn set_pawnio_prompted() {
+    write_dword(APP_KEY, "PawnIOPrompted", 1);
+}
+
 pub fn set_alerts(on: bool) {
     write_dword(APP_KEY, "LowBatteryAlerts", u32::from(on));
 }

@@ -1,7 +1,7 @@
 //! Right-click context menu: construction, command dispatch and the actions it triggers
 //! (diagnostics copy, device probing).
 
-use super::{readings, redraw, sys_snapshot, wake, with};
+use super::{readings, redraw, sys_snapshot, wake};
 use crate::{diag, notify, probe, settings, sysmonitor, wide};
 use std::mem::zeroed;
 use std::ptr::null;
@@ -18,6 +18,7 @@ const CMD_ALERTS: usize = 4;
 const CMD_COPY_DIAGNOSTICS: usize = 5;
 const CMD_PROBE: usize = 6;
 const CMD_HISTORY: usize = 7;
+const CMD_PAWNIO: usize = 8;
 const CMD_DEVICE_BASE: usize = 100;
 /// 7 entries (one per `sysmonitor::SENSOR_NAMES`), well clear of CMD_DEVICE_BASE's range.
 const CMD_SENSOR_BASE: usize = 500;
@@ -282,6 +283,12 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     AppendMenuW(menu, MF_STRING, CMD_COPY_DIAGNOSTICS, copy_label.as_ptr());
     let probing = if PROBING.load(Ordering::Relaxed) { MF_GRAYED } else { 0 };
     AppendMenuW(menu, MF_STRING | probing, CMD_PROBE, probe_label.as_ptr());
+    // Only useful while CPU temperature has no source at all; hidden once a reading works.
+    if sys_snapshot().is_some_and(|s| s.cpu_temp.is_none()) && settings::sensor_mask() & sysmonitor::BIT_CPU_TEMP != 0 {
+        let pawnio_label = wide("Install CPU temperature driver");
+        AppendMenuW(menu, MF_STRING, CMD_PAWNIO, pawnio_label.as_ptr());
+        labels.push(pawnio_label);
+    }
     let history_label = wide("Show usage history graph");
     AppendMenuW(menu, MF_STRING, CMD_HISTORY, history_label.as_ptr());
     AppendMenuW(menu, MF_STRING, CMD_EXIT, exit.as_ptr());
@@ -300,15 +307,9 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         CMD_ALERTS => settings::set_alerts(!settings::alerts_enabled()),
         CMD_COPY_DIAGNOSTICS => copy_diagnostics(hwnd),
         CMD_PROBE => start_probe(),
+        CMD_PAWNIO => super::install_pawnio_driver(hwnd as usize),
         CMD_HISTORY => crate::history::toggle_open(),
-        CMD_EXIT => {
-            super::tray::set_tray_icon(false);
-            let widget = with(|a| a.widget);
-            if !widget.is_null() {
-                DestroyWindow(widget);
-            }
-            DestroyWindow(hwnd);
-        }
+        CMD_EXIT => super::shutdown(hwnd),
         CMD_INTERVAL_1S => settings::set_refresh_interval(1000),
         CMD_INTERVAL_2S => settings::set_refresh_interval(2000),
         CMD_INTERVAL_5S => settings::set_refresh_interval(5000),

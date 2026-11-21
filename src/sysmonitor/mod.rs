@@ -135,13 +135,15 @@ pub struct SysMonitor {
     disk: Option<Disk>,
     disk_tick: u32,
     last_disk_temp: Option<f64>,
+    /// Samples since the last attempt to open PawnIO, while it isn't available yet.
+    pio_retry: u32,
 }
 
 impl SysMonitor {
     pub fn new() -> SysMonitor {
         let gpus = Gpu::detect_all();
         let pio = PawnIo::open();
-        let pdh = PdhQuery::build(pio.is_none(), !gpus.is_empty());
+        let pdh = PdhQuery::build(!gpus.is_empty());
         SysMonitor {
             prev_idle: 0,
             prev_total: 0,
@@ -151,9 +153,14 @@ impl SysMonitor {
             disk: Disk::open(),
             disk_tick: 0,
             last_disk_temp: None,
+            pio_retry: 0,
         }
     }
 
+    /// True while no PawnIO driver is reachable: the caller offers to install it.
+    pub fn pawnio_missing(&self) -> bool {
+        self.pio.is_none()
+    }
     fn read_cpu(&mut self) -> Option<f64> {
         let (mut idle, mut kernel, mut user): (FILETIME, FILETIME, FILETIME) = unsafe { zeroed3() };
         if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
@@ -264,6 +271,14 @@ impl SysMonitor {
                 g.temp = gpu.temp();
             }
         }
+        // The driver can be installed while the app is running; retry every ~15 samples so the
+        // temperature appears without a restart.
+        if self.pio.is_none() {
+            self.pio_retry += 1;
+            if self.pio_retry.is_multiple_of(15) {
+                self.pio = PawnIo::open();
+            }
+        }
         s.cpu_temp = self.pio.as_ref().and_then(PawnIo::temp).or(s.cpu_temp);
 
         // SSD/HDD temperature changes slowly, so it's re-read every 5th sample.
@@ -355,6 +370,16 @@ impl Default for SysMonitor {
     fn default() -> SysMonitor {
         SysMonitor::new()
     }
+}
+
+/// Installs PawnIO through winget (`namazso.PawnIO`). Blocking; call it off the polling thread.
+pub fn install_pawnio() -> Result<(), String> {
+    pawnio::PawnIo::install()
+}
+
+/// This CPU's marketing name, for the driver prompt.
+pub fn cpu_brand() -> String {
+    pawnio::cpu_brand()
 }
 
 unsafe fn zeroed3() -> (FILETIME, FILETIME, FILETIME) {

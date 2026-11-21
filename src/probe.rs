@@ -151,6 +151,11 @@ pub fn feature_len(desc: &[u8], id: u8) -> Option<usize> {
     report_layout(desc).get(&(Kind::Feature, id)).map(|bits| bits.div_ceil(8) as usize)
 }
 
+/// Length in bytes (id included) of output report `id`, from a report descriptor.
+pub fn output_len(desc: &[u8], id: u8) -> Option<usize> {
+    report_layout(desc).get(&(Kind::Output, id)).map(|bits| bits.div_ceil(8) as usize)
+}
+
 fn is_plain_input(page: u16, usage: u16) -> bool {
     page == 0x01 && matches!(usage, 0x02 | 0x06 | 0x07) || page == 0x0D
 }

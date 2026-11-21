@@ -84,16 +84,14 @@ fn pdh_add(query: isize, path: &str) -> isize {
 }
 
 impl PdhQuery {
-    pub(crate) fn build(want_cpu_temp: bool, has_gpu: bool) -> Option<PdhQuery> {
+    pub(crate) fn build(has_gpu: bool) -> Option<PdhQuery> {
         let mut query = 0isize;
         if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
             return None;
         }
-        let therm = if want_cpu_temp {
-            pdh_add(query, r"\Thermal Zone Information(*)\Temperature")
-        } else {
-            0
-        };
+        // Always added: with PawnIO present it is the fallback for a machine where the MSR/SMN
+        // read fails, not only for one without the driver.
+        let therm = pdh_add(query, r"\Thermal Zone Information(*)\Temperature");
         let eng = if has_gpu { pdh_add(query, r"\GPU Engine(*)\Utilization Percentage") } else { 0 };
         let mem = if has_gpu { pdh_add(query, r"\GPU Adapter Memory(*)\Dedicated Usage") } else { 0 };
         let proc_cpu = pdh_add(query, r"\Process(*)\% Processor Time");

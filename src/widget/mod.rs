@@ -10,7 +10,7 @@ mod menu;
 mod tray;
 
 use crate::device::{Reading, Status, Tracker};
-use crate::{areson, bluetooth, corsair, corsair_slipstream, delux, device, diag, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, wide, xbox};
+use crate::{areson, asus, bluetooth, corsair, corsair_slipstream, delux, device, diag, glorious, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, wide, xbox};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
@@ -24,10 +24,13 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, SetProcessWorkingSetSize};
 use windows_sys::Win32::UI::Controls::*;
 use windows_sys::Win32::UI::HiDpi::*;
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const WM_APP_UPDATE: u32 = WM_APP + 1;
 const WM_APP_MENU: u32 = WM_APP + 2;
+/// Close this instance after a successful driver install; a relaunched one is already waiting.
+const WM_APP_EXIT: u32 = WM_APP + 3;
 const TIMER_PLACE: usize = 1;
 /// WM_POWERBROADCAST: resumed from sleep/hibernate.
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
@@ -183,6 +186,8 @@ fn worker(controller: usize, rx: Receiver<()>) {
     let mut logi = logitech::Logitech::new();
     let mut delux = delux::Delux::default();
     let mut areson = areson::Areson::default();
+    let mut asus = asus::Asus::default();
+    let mut glorious = glorious::Glorious::default();
     let mut mchose = mchose::Mchose::default();
     let mut mchose_mice = mchose_mouse::MchoseMice::default();
     let mut corsair = corsair::Corsair::default();
@@ -202,6 +207,8 @@ fn worker(controller: usize, rx: Receiver<()>) {
         obs.extend(playstation::scan(&api));
         obs.extend(delux.scan(&api));
         obs.extend(areson.scan(&api));
+        obs.extend(asus.scan(&api));
+        obs.extend(glorious.scan(&api));
         obs.extend(mchose.scan(&api));
         obs.extend(mchose_mice.scan(&api));
         obs.extend(corsair.scan(&api));
@@ -250,6 +257,14 @@ fn sysmonitor_worker(controller: usize) {
     loop {
         let hidden_gpu = settings::hidden_gpu_sensors();
         let raw = mon.sample(&hidden_gpu);
+        if raw.cpu_temp.is_none()
+            && mon.pawnio_missing()
+            && settings::sensor_mask() & sysmonitor::BIT_CPU_TEMP != 0
+            && !settings::pawnio_prompted()
+        {
+            settings::set_pawnio_prompted();
+            ask_pawnio_install(controller);
+        }
         let gpu_temps: Vec<_> = raw.gpus.iter().map(|g| g.temp).collect();
         temp_alerts.check(raw.cpu_temp, &gpu_temps);
         history::push(&raw);
@@ -263,6 +278,73 @@ fn sysmonitor_worker(controller: usize) {
 
 fn sys_snapshot() -> Option<sysmonitor::Snapshot> {
     SYS_SNAPSHOT.lock().unwrap().clone()
+}
+
+/// One-time offer for CPU temperature, which needs the PawnIO kernel driver. Yes installs it
+/// through winget (`namazso.PawnIO`, silent) and restarts the app; when winget is missing or
+/// fails, the vendor's download page opens instead.
+fn ask_pawnio_install(controller: usize) {
+    let cpu = sysmonitor::cpu_brand();
+    let cpu = if cpu.is_empty() { "This CPU".to_string() } else { cpu };
+    let text = wide(&format!(
+        "{cpu} can report its temperature only through the PawnIO driver (by namazso), which is not \
+         installed on this PC.\n\n\
+         Install it now through winget? It downloads the official signed installer (about 3 MB), runs it \
+         silently, and reopens SETTMetter. If winget isn't available, the download page opens instead.\n\n\
+         Choosing No leaves CPU temperature unavailable; the menu keeps an item to install it later."
+    ));
+    let caption = wide("CPU temperature");
+    let answer =
+        unsafe { MessageBoxW(null_mut(), text.as_ptr(), caption.as_ptr(), MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST) };
+    diag::event("cpu temp", format!("driver prompt: {}", if answer == IDYES { "install via winget" } else { "declined" }));
+    if answer == IDYES {
+        install_pawnio_driver(controller);
+    } else {
+        diag::event("cpu temp", "declined: CPU temperature stays unavailable");
+    }
+}
+
+/// winget takes a while, so this runs off the polling thread. On success the app relaunches, so
+/// the new process opens the driver from scratch; a failure (or no winget) falls back to the
+/// vendor page.
+pub(super) fn install_pawnio_driver(controller: usize) {
+    std::thread::spawn(move || match sysmonitor::install_pawnio() {
+        Ok(()) => {
+            diag::event("cpu temp", "PawnIO installed via winget, restarting");
+            restart(controller);
+        }
+        Err(e) => {
+            diag::event("cpu temp", format!("PawnIO install failed: {e}"));
+            open_pawnio_page();
+        }
+    });
+}
+
+/// Relaunches the app. The new process starts with `--restart`, which waits for this instance's
+/// single-instance mutex to be released.
+fn restart(controller: usize) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let pid = std::process::id().to_string();
+    if std::process::Command::new(exe).args(["--restart", pid.as_str()]).spawn().is_err() {
+        return; // keep running: the sample loop still retries the driver
+    }
+    unsafe { PostMessageW(controller as HWND, WM_APP_EXIT, 0, 0) };
+}
+
+/// Closes the tray icon and both windows, which ends the message loop.
+pub(super) unsafe fn shutdown(hwnd: HWND) {
+    tray::set_tray_icon(false);
+    let widget = with(|a| a.widget);
+    if !widget.is_null() {
+        DestroyWindow(widget);
+    }
+    DestroyWindow(hwnd);
+}
+
+/// The official PawnIO download page, in the default browser.
+fn open_pawnio_page() {
+    let (op, url) = (wide("open"), wide("https://pawnio.eu/"));
+    unsafe { ShellExecuteW(null_mut(), op.as_ptr(), url.as_ptr(), null(), null(), SW_SHOWNORMAL) };
 }
 
 /// The app is idle between scans, so hand its pages back to Windows until the next one.
@@ -582,6 +664,7 @@ unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
             return 1;
         }
         WM_APP_MENU => menu::show_menu(hwnd),
+        WM_APP_EXIT => shutdown(hwnd),
         WM_DESTROY => PostQuitMessage(0),
         m if m == taskbar_created && m != 0 => {
             // Explorer restarted: the old widget died with the old taskbar.

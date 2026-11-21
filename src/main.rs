@@ -1,12 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod areson;
+mod asus;
 mod bluetooth;
 mod corsair;
 mod corsair_slipstream;
 mod delux;
 mod device;
 mod diag;
+mod glorious;
 mod headsetcontrol;
 mod hid_battery;
 mod history;
@@ -35,8 +37,7 @@ pub(crate) fn init_com() {
     }
 }
 
-fn main() {
-    match std::env::args().nth(1).as_deref() {
+fn main() {    match std::env::args().nth(1).as_deref() {
         // Debug helpers (they print only in debug builds; release builds have no console).
         Some("--test-toast") => {
             init_com();
@@ -65,6 +66,8 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(2500));
             obs.extend(delux.scan(&api));
             obs.extend(areson::Areson::default().scan(&api));
+            obs.extend(asus::Asus::default().scan(&api));
+            obs.extend(glorious::Glorious::default().scan(&api));
             obs.extend(mchose::Mchose::default().scan(&api));
             obs.extend(mchose_mouse::MchoseMice::default().scan(&api));
             obs.extend(corsair::Corsair::default().scan(&api));
@@ -90,6 +93,30 @@ fn main() {
             widget::DEMO.store(true, std::sync::atomic::Ordering::Relaxed);
             widget::run();
         }
+        // Relaunch after installing the CPU-temperature driver: wait for the old instance to
+        // release its single-instance mutex, then start normally.
+        Some("--restart") => {
+            if let Some(pid) = std::env::args().nth(2).and_then(|s| s.parse::<u32>().ok()) {
+                wait_for_exit(pid);
+            }
+            widget::run();
+        }
         _ => widget::run(),
+    }
+}
+
+/// Waits up to 10 s for the previous instance to exit, so the relaunch doesn't race the
+/// single-instance mutex and quit straight away.
+fn wait_for_exit(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+    /// `SYNCHRONIZE` access right, enough to wait on the process handle.
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    unsafe {
+        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+        if !handle.is_null() {
+            WaitForSingleObject(handle, 10_000);
+            CloseHandle(handle);
+        }
     }
 }
