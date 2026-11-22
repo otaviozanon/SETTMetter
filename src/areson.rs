@@ -82,20 +82,17 @@ impl Areson {
             }
             let r = self.open.get_mut(&cache_key).unwrap();
             let state = match query(&r.request, &r.reply) {
-                Ok(Some((level, charging))) => {
-                    let percent = if r.whole_percent { Some(level) } else { level.checked_mul(10) };
-                    match percent.filter(|p| *p <= 100) {
-                        Some(percent) => {
-                            r.name = Some("Wireless mouse".into());
-                            diag::event(&r.key, format!("battery via report 0x08 (level {level}, charging {charging})"));
-                            State::Battery { percent, charging }
-                        }
-                        None => {
-                            diag::event(&r.key, format!("level {level} out of range"));
-                            State::Unreachable
-                        }
+                Ok(Some((level, charging))) => match percent(level, charging, r.whole_percent) {
+                    Some(percent) => {
+                        r.name = Some("Wireless mouse".into());
+                        diag::event(&r.key, format!("battery via report 0x08 (level {level}, charging {charging})"));
+                        State::Battery { percent, charging }
                     }
-                }
+                    None => {
+                        diag::event(&r.key, format!("level {level} charging {charging}, no reading yet"));
+                        State::Unreachable
+                    }
+                },
                 Ok(None) => {
                     diag::event(&r.key, "no reply (mouse asleep or off)");
                     State::Unreachable
@@ -176,6 +173,17 @@ fn checksum(frame: &[u8]) -> u8 {
     0x55u8.wrapping_sub(frame.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)))
 }
 
+/// Percentage from the reply's level byte, or None when there is no usable reading yet. A
+/// receiver that just connected answers 0 before it can hear the mouse; a real 0% battery
+/// would be switched off, and taking 0 as valid fires the low-battery alert.
+fn percent(level: u8, charging: bool, whole_percent: bool) -> Option<u8> {
+    if level == 0 && !charging {
+        return None;
+    }
+    let percent = if whole_percent { level } else { level.checked_mul(10)? };
+    (percent <= 100).then_some(percent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +219,18 @@ mod tests {
         req[0] = REPORT_ID;
         req[1] = COMMAND;
         assert_eq!(checksum(&req[..LEN - 1]), 0x49);
+    }
+
+    #[test]
+    fn zero_without_charging_is_not_a_reading() {
+        // Receiver answered before it could hear the mouse (seen right after reconnecting).
+        assert_eq!(percent(0, false, true), None);
+        // Actually charging at 0% is a real (bad) state.
+        assert_eq!(percent(0, true, true), Some(0));
+        assert_eq!(percent(100, false, true), Some(100));
+        assert_eq!(percent(101, false, true), None);
+        // Tenths PIDs: 10 means 100%.
+        assert_eq!(percent(5, false, false), Some(50));
+        assert_eq!(percent(10, false, false), Some(100));
     }
 }

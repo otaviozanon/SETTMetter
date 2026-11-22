@@ -139,6 +139,16 @@ impl Tracker {
                 r.status = Status::NotConnected;
             }
         }
+        // A device that changed connection mode enumerates under a new id and leaves the old
+        // row behind (e.g. a mouse over its cable, then over its dongle). Drop the offline row
+        // while a live one with the same name and kind exists: they can't be told apart anyway.
+        let live: Vec<(String, Kind)> = self
+            .known
+            .iter()
+            .filter(|r| r.status != Status::NotConnected)
+            .map(|r| (r.name.clone(), r.kind))
+            .collect();
+        self.known.retain(|r| r.status != Status::NotConnected || !live.contains(&(r.name.clone(), r.kind)));
         self.known.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
         self.known.clone()
     }
@@ -193,5 +203,31 @@ mod tests {
         let mut o = obs(State::Unreachable);
         o.name = None;
         assert!(t.update(vec![o]).is_empty());
+    }
+
+    fn mouse(id: &str, percent: u8, charging: bool) -> Observation {
+        Observation {
+            id: id.into(),
+            name: Some("Wireless mouse".into()),
+            kind: Some(Kind::Mouse),
+            state: State::Battery { percent, charging },
+        }
+    }
+
+    #[test]
+    fn offline_duplicate_is_dropped_when_a_live_one_appears() {
+        // Cable unplugged, same mouse now on its dongle: a different id for the same device.
+        let mut t = Tracker::default();
+        t.update(vec![mouse("areson:fa7b", 95, true)]);
+        let r = t.update(vec![mouse("areson:fa7c", 100, false)]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].id, "areson:fa7c");
+    }
+
+    #[test]
+    fn two_live_devices_with_the_same_name_are_kept() {
+        let mut t = Tracker::default();
+        let r = t.update(vec![mouse("a", 80, false), mouse("b", 90, false)]);
+        assert_eq!(r.len(), 2);
     }
 }
