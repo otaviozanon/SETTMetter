@@ -10,7 +10,7 @@ mod menu;
 mod tray;
 
 use crate::device::{Reading, Status, Tracker};
-use crate::{areson, asus, bluetooth, corsair, corsair_slipstream, delux, device, diag, glorious, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, wide, xbox};
+use crate::{areson, asus, bluetooth, corsair, corsair_slipstream, delux, device, diag, glorious, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, update, wide, xbox};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
@@ -86,7 +86,10 @@ pub fn run() {
             return; // already running
         }
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        settings::ensure_autostart();
+        // For the Task Scheduler calls behind "Start with Windows" (menu runs on this thread).
+        crate::init_com();
+        settings::drop_legacy_autostart();
+        crate::update::cleanup();
         settings::register_app_id();
         diag::start();
 
@@ -122,6 +125,12 @@ pub fn run() {
         const STACK: usize = 64 * 1024;
         let _ = std::thread::Builder::new().stack_size(STACK).spawn(move || worker(controller_addr, rx));
         let _ = std::thread::Builder::new().stack_size(STACK).spawn(move || sysmonitor_worker(controller_addr));
+        // Passive update check after the device sources have settled.
+        let _ = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(10));
+            init_com();
+            update::check(false);
+        });
 
         ensure_widget();
         SetTimer(controller, TIMER_PLACE, 1000, None);
@@ -316,6 +325,25 @@ pub(super) fn install_pawnio_driver(controller: usize) {
         Err(e) => {
             diag::event("cpu temp", format!("PawnIO install failed: {e}"));
             open_pawnio_page();
+        }
+    });
+}
+
+/// Menu's update item: install the release a check already found, or run a check when none
+/// was found yet.
+pub(super) fn update_action(controller: usize) {
+    std::thread::spawn(move || {
+        init_com();
+        if update::available().is_some() {
+            match update::install() {
+                Ok(()) => restart(controller),
+                Err(e) => {
+                    diag::event("update", format!("install failed: {e}"));
+                    let _ = notify::show("Update failed", &e);
+                }
+            }
+        } else {
+            update::check(true);
         }
     });
 }

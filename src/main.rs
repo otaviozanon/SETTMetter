@@ -23,6 +23,7 @@ mod render;
 mod settings;
 mod steelseries;
 mod sysmonitor;
+mod update;
 mod widget;
 mod xbox;
 

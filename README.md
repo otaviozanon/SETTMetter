@@ -2,7 +2,7 @@
 
 Wireless device battery levels and system monitoring (CPU/RAM/GPU/VRAM/temperatures) on the Windows 11 taskbar.
 
-One native executable, no installer, no runtime, no service. No network access of its own — the only download is the optional CPU-temperature driver, fetched through `winget` when you ask for it.
+One native executable, no installer, no runtime, no service. The only network access is the update check against the GitHub releases page, plus the optional CPU-temperature driver fetched through `winget` when you ask for it.
 
 ## Features
 
@@ -13,13 +13,14 @@ One native executable, no installer, no runtime, no service. No network access o
 - **History graph** — a popup plotting the last ~5 minutes of CPU/RAM/GPU usage.
 - **Native look** — follows the light/dark taskbar theme, scales with DPI, uses Windows' own Fluent icons.
 - **Fallback tray icon** — keeps the settings menu reachable when every device and sensor is hidden.
-- **Private** — everything stays on your PC. No telemetry, no accounts.
+- **Updates** — checks the GitHub releases page at launch; when a new version exists, **Update to vX** in the menu downloads it and replaces the running exe (restarts automatically, still elevated).
+- **Private** — no telemetry, no accounts; the only outbound call is that update check.
 
 ## Install
 
 Download `SETTMetter.exe` from the [latest release](https://github.com/otaviozanon/SETTMetter/releases/latest) and run it. No install step: the widget attaches to the taskbar and stays there.
 
-Administrator rights are required — the manifest requests elevation, which the CPU temperature sensor needs.
+Administrator rights are required - the manifest requests elevation, which the CPU temperature sensor needs. Because of that, **Start with Windows** (off by default) registers a logon task with the highest privileges: Windows silently blocks elevated programs started from the Run key.
 
 CPU temperature also needs the [PawnIO](https://pawnio.eu) driver, a one-time signed install. Without it the reading falls back to Windows' ACPI thermal zone, which most desktop boards don't expose — so a desktop shows no CPU temperature. The app offers to install it through winget (`namazso.PawnIO`) and reopens itself when done; the same item stays in the menu. "Copy diagnostics" reports which source answered, or why none did.
 
@@ -28,14 +29,11 @@ CPU temperature also needs the [PawnIO](https://pawnio.eu) driver, a one-time si
 Right-click the widget (or the fallback tray icon) for:
 
 - **Devices** — every detected device with its level; uncheck to hide it from the taskbar.
-- **System sensors** — CPU usage/temperature, RAM usage, per-GPU usage/temperature, per-GPU VRAM usage, SSD temperature.
-- **Presets** — apply a sensor/icon combination in one click.
-- **CPU/GPU alert thresholds** — 60–95 °C, independently per component.
-- **Refresh rate** — how often system sensors are sampled.
-- **Screen** — which monitor's taskbar the widget is docked to (secondary taskbars need "Show my taskbar on all displays").
-- **Position** — nudge the widget left/right in 16 px steps when the automatic spot next to the clock isn't right; reset restores it.
-- **Icons** — which icons are drawn next to the values.
-- **Show usage history graph**, **Refresh now**, **Low battery alerts**, **Start with Windows**, **Probe an unsupported device (60 s)**, **Copy diagnostics**, **Exit**.
+- **Sensors** ▸ — CPU usage/temperature, RAM usage, per-GPU usage/temperature, per-GPU VRAM usage, SSD temperature.
+- **Display** ▸ — **Icons** (which glyphs are drawn next to the values), **Refresh rate**, **Screen** (which monitor's taskbar the widget is docked to; secondary taskbars need "Show my taskbar on all displays") and **Position** (nudge the widget in 16 px steps when the automatic spot next to the clock isn't right).
+- **Presets** ▸ — apply a sensor/icon combination in one click.
+- **Alerts** ▸ — low battery notifications, plus CPU/GPU thresholds from 60 to 95 °C, independently per component.
+- **Refresh now**, **Show usage history graph**, **Start with Windows**, **Check for updates**, **Diagnostics** ▸ (**Copy diagnostics**, **Probe an unsupported device (60 s)**, **Install CPU temperature driver**) and **Exit**.
 
 Hover the widget for each device's full name and status; the tooltip also lists the top CPU/RAM/GPU-consuming processes.
 

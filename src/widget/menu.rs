@@ -2,7 +2,7 @@
 //! (diagnostics copy, device probing).
 
 use super::{readings, redraw, sys_snapshot, wake};
-use crate::{diag, notify, probe, settings, sysmonitor, wide};
+use crate::{diag, notify, probe, settings, sysmonitor, update, wide};
 use std::mem::zeroed;
 use std::ptr::null;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,7 @@ const CMD_COPY_DIAGNOSTICS: usize = 5;
 const CMD_PROBE: usize = 6;
 const CMD_HISTORY: usize = 7;
 const CMD_PAWNIO: usize = 8;
+const CMD_UPDATE: usize = 9;
 const CMD_DEVICE_BASE: usize = 100;
 /// 7 entries (one per `sysmonitor::SENSOR_NAMES`), well clear of CMD_DEVICE_BASE's range.
 const CMD_SENSOR_BASE: usize = 500;
@@ -115,6 +116,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     // than one GPU. Temperature items show "(no sensor found)" when the
     // corresponding sensor isn't available.
     let checked = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
+    let sensor_menu = CreatePopupMenu();
     let mask = settings::sensor_mask();
     let snap = sys_snapshot();
     let hidden_gpu = settings::hidden_gpu_sensors();
@@ -129,7 +131,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         };
         let suffix = if (mask & bit) != 0 && !has_sensor { "  (no sensor found)" } else { "" };
         let label = wide(&format!("{name}{suffix}"));
-        AppendMenuW(menu, MF_STRING | checked(mask & bit != 0), CMD_SENSOR_BASE + idx, label.as_ptr());
+        AppendMenuW(sensor_menu, MF_STRING | checked(mask & bit != 0), CMD_SENSOR_BASE + idx, label.as_ptr());
         labels.push(label);
         // Insert the per-adapter GPU items right after "CPU temperature", matching the order
         // CPU usage / CPU temperature / GPU usage / GPU temperature / RAM usage / VRAM usage /
@@ -139,7 +141,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
                 let name = if multi_gpu { format!("GPU{} usage", i + 1) } else { "GPU usage".to_string() };
                 let on = !hidden_gpu.iter().any(|h| h == &format!("gpu{i}"));
                 let label = wide(&name);
-                AppendMenuW(menu, MF_STRING | checked(on), CMD_GPU_SENSOR_BASE + i, label.as_ptr());
+                AppendMenuW(sensor_menu, MF_STRING | checked(on), CMD_GPU_SENSOR_BASE + i, label.as_ptr());
                 labels.push(label);
             }
             for i in 0..gpu_count {
@@ -148,7 +150,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
                 let base = if multi_gpu { format!("GPU{} temperature", i + 1) } else { "GPU temperature".to_string() };
                 let suffix = if on && !has_gpu_temp { "  (no sensor found)" } else { "" };
                 let label = wide(&format!("{base}{suffix}"));
-                AppendMenuW(menu, MF_STRING | checked(on), CMD_GPU_TEMP_SENSOR_BASE + i, label.as_ptr());
+                AppendMenuW(sensor_menu, MF_STRING | checked(on), CMD_GPU_TEMP_SENSOR_BASE + i, label.as_ptr());
                 labels.push(label);
             }
         }
@@ -157,11 +159,17 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
                 let name = if multi_gpu { format!("VRAM{} usage", i + 1) } else { "VRAM usage".to_string() };
                 let on = !hidden_gpu.iter().any(|h| h == &format!("vram{i}"));
                 let label = wide(&name);
-                AppendMenuW(menu, MF_STRING | checked(on), CMD_VRAM_SENSOR_BASE + i, label.as_ptr());
+                AppendMenuW(sensor_menu, MF_STRING | checked(on), CMD_VRAM_SENSOR_BASE + i, label.as_ptr());
                 labels.push(label);
             }
         }
     }
+    let sensors_label = wide("Sensors");
+    AppendMenuW(menu, MF_POPUP, sensor_menu as usize, sensors_label.as_ptr());
+    labels.push(sensors_label);
+
+    // Display: what the widget draws and where it sits.
+    let display_menu = CreatePopupMenu();
     // One checkable item per group icon (CPU/GPU/RAM/VRAM/SSD), toggling just the glyph drawn
     // next to that group's values on the taskbar.
     let icon_mask = settings::icon_mask();
@@ -173,10 +181,10 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         icon_labels.push(label);
     }
     let icons_label = wide("Icons");
-    AppendMenuW(menu, MF_POPUP, icon_menu as usize, icons_label.as_ptr());
+    AppendMenuW(display_menu, MF_POPUP, icon_menu as usize, icons_label.as_ptr());
     labels.extend(icon_labels);
     labels.push(icons_label);
-    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    AppendMenuW(display_menu, MF_SEPARATOR, 0, null());
 
     let interval = settings::refresh_interval_ms();
     let rate_menu = CreatePopupMenu();
@@ -185,7 +193,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     AppendMenuW(rate_menu, MF_STRING | checked(interval == 2000), CMD_INTERVAL_2S, r2.as_ptr());
     AppendMenuW(rate_menu, MF_STRING | checked(interval == 5000), CMD_INTERVAL_5S, r5.as_ptr());
     let rate_label = wide("Refresh rate");
-    AppendMenuW(menu, MF_POPUP, rate_menu as usize, rate_label.as_ptr());
+    AppendMenuW(display_menu, MF_POPUP, rate_menu as usize, rate_label.as_ptr());
     labels.extend([r1, r2, r5, rate_label]);
 
     // Which monitor's taskbar hosts the widget. Only screens with a taskbar are listed; secondary
@@ -211,7 +219,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         screen_labels.push(label);
     }
     let screen_label = wide("Screen");
-    AppendMenuW(menu, MF_POPUP, screen_menu as usize, screen_label.as_ptr());
+    AppendMenuW(display_menu, MF_POPUP, screen_menu as usize, screen_label.as_ptr());
     labels.extend(screen_labels);
     labels.push(screen_label);
 
@@ -227,8 +235,11 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     AppendMenuW(position_menu, MF_STRING, CMD_OFFSET_RIGHT, right_label.as_ptr());
     AppendMenuW(position_menu, MF_STRING, CMD_OFFSET_RESET, reset_label.as_ptr());
     let position_label = wide("Position");
-    AppendMenuW(menu, MF_POPUP, position_menu as usize, position_label.as_ptr());
+    AppendMenuW(display_menu, MF_POPUP, position_menu as usize, position_label.as_ptr());
     labels.extend([offset_label, left_label, right_label, reset_label, position_label]);
+    let display_label = wide("Display");
+    AppendMenuW(menu, MF_POPUP, display_menu as usize, display_label.as_ptr());
+    labels.push(display_label);
 
     // Quick presets: set sensor_mask + icon_mask together in one click.
     let preset_menu = CreatePopupMenu();
@@ -243,8 +254,13 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     labels.extend(preset_labels);
     labels.push(preset_label);
 
-    // Temperature alert thresholds: independent submenu per sensor (CPU/GPU), each offering
-    // the same fixed \u00b0C choices, with the current threshold checked.
+    // Alerts: the low-battery toggle plus one threshold submenu per sensor (CPU/GPU), each
+    // offering the same fixed \u00b0C choices with the current threshold checked.
+    let alert_menu = CreatePopupMenu();
+    let low_battery_label = wide("Low battery alerts");
+    AppendMenuW(alert_menu, MF_STRING | checked(settings::alerts_enabled()), CMD_ALERTS, low_battery_label.as_ptr());
+    labels.push(low_battery_label);
+    AppendMenuW(alert_menu, MF_SEPARATOR, 0, null());
     let cpu_threshold = settings::cpu_alert_threshold();
     let cpu_t_menu = CreatePopupMenu();
     let mut cpu_t_labels = Vec::new();
@@ -254,7 +270,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         cpu_t_labels.push(label);
     }
     let cpu_t_label = wide("CPU alert threshold");
-    AppendMenuW(menu, MF_POPUP, cpu_t_menu as usize, cpu_t_label.as_ptr());
+    AppendMenuW(alert_menu, MF_POPUP, cpu_t_menu as usize, cpu_t_label.as_ptr());
     labels.extend(cpu_t_labels);
     labels.push(cpu_t_label);
 
@@ -267,30 +283,42 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         gpu_t_labels.push(label);
     }
     let gpu_t_label = wide("GPU alert threshold");
-    AppendMenuW(menu, MF_POPUP, gpu_t_menu as usize, gpu_t_label.as_ptr());
+    AppendMenuW(alert_menu, MF_POPUP, gpu_t_menu as usize, gpu_t_label.as_ptr());
     labels.extend(gpu_t_labels);
     labels.push(gpu_t_label);
+    let alerts_label = wide("Alerts");
+    AppendMenuW(menu, MF_POPUP, alert_menu as usize, alerts_label.as_ptr());
+    labels.push(alerts_label);
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
 
     let (refresh, autostart, exit) = (wide("Refresh now"), wide("Start with Windows"), wide("Exit"));
-    let alerts = wide("Low battery alerts");
+    AppendMenuW(menu, MF_STRING, CMD_REFRESH, refresh.as_ptr());
+    let history_label = wide("Show usage history graph");
+    AppendMenuW(menu, MF_STRING, CMD_HISTORY, history_label.as_ptr());
+    AppendMenuW(menu, MF_STRING | checked(settings::autostart_enabled()), CMD_AUTOSTART, autostart.as_ptr());
+    let update_label = match update::available() {
+        Some(version) => wide(&format!("Update to v{version}")),
+        None => wide("Check for updates"),
+    };
+    AppendMenuW(menu, MF_STRING, CMD_UPDATE, update_label.as_ptr());
+    labels.push(update_label);
+
+    // Rarely used, so it stays out of the top level and keeps the menu short.
+    let diag_menu = CreatePopupMenu();
     let copy_label = wide("Copy diagnostics");
     let probe_label = wide("Probe an unsupported device (60 s)");
-    AppendMenuW(menu, MF_STRING, CMD_REFRESH, refresh.as_ptr());
-    AppendMenuW(menu, MF_STRING | checked(settings::alerts_enabled()), CMD_ALERTS, alerts.as_ptr());
-    AppendMenuW(menu, MF_STRING | checked(settings::autostart_enabled()), CMD_AUTOSTART, autostart.as_ptr());
-    AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    AppendMenuW(menu, MF_STRING, CMD_COPY_DIAGNOSTICS, copy_label.as_ptr());
+    AppendMenuW(diag_menu, MF_STRING, CMD_COPY_DIAGNOSTICS, copy_label.as_ptr());
     let probing = if PROBING.load(Ordering::Relaxed) { MF_GRAYED } else { 0 };
-    AppendMenuW(menu, MF_STRING | probing, CMD_PROBE, probe_label.as_ptr());
+    AppendMenuW(diag_menu, MF_STRING | probing, CMD_PROBE, probe_label.as_ptr());
     // Only useful while CPU temperature has no source at all; hidden once a reading works.
     if sys_snapshot().is_some_and(|s| s.cpu_temp.is_none()) && settings::sensor_mask() & sysmonitor::BIT_CPU_TEMP != 0 {
         let pawnio_label = wide("Install CPU temperature driver");
-        AppendMenuW(menu, MF_STRING, CMD_PAWNIO, pawnio_label.as_ptr());
+        AppendMenuW(diag_menu, MF_STRING, CMD_PAWNIO, pawnio_label.as_ptr());
         labels.push(pawnio_label);
     }
-    let history_label = wide("Show usage history graph");
-    AppendMenuW(menu, MF_STRING, CMD_HISTORY, history_label.as_ptr());
+    let diag_label = wide("Diagnostics");
+    AppendMenuW(menu, MF_POPUP, diag_menu as usize, diag_label.as_ptr());
+    labels.push(diag_label);
     AppendMenuW(menu, MF_STRING, CMD_EXIT, exit.as_ptr());
 
     let mut pt: POINT = zeroed();
@@ -309,6 +337,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
         CMD_PROBE => start_probe(),
         CMD_PAWNIO => super::install_pawnio_driver(hwnd as usize),
         CMD_HISTORY => crate::history::toggle_open(),
+        CMD_UPDATE => super::update_action(hwnd as usize),
         CMD_EXIT => super::shutdown(hwnd),
         CMD_INTERVAL_1S => settings::set_refresh_interval(1000),
         CMD_INTERVAL_2S => settings::set_refresh_interval(2000),

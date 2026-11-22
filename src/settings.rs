@@ -5,12 +5,20 @@ use crate::wide;
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::Mutex;
+use windows::core::{BSTR, Interface, VARIANT};
+use windows::Win32::Foundation::VARIANT_FALSE;
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::System::TaskScheduler::{
+    IExecAction, ILogonTrigger, ITaskService, ITaskFolder, TaskScheduler, TASK_ACTION_EXEC, TASK_CREATE_OR_UPDATE,
+    TASK_LOGON_INTERACTIVE_TOKEN, TASK_RUNLEVEL_HIGHEST, TASK_TRIGGER_LOGON,
+};
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Registry::*;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const APP_KEY: &str = r"Software\SETTMetter";
 const RUN_VALUE: &str = "SETTMetter";
+const TASK_NAME: &str = "SETTMetter";
 
 /// Cache of the settings read on every redraw/menu build (`hidden_devices`, `sensor_mask`,
 /// `hidden_gpu_sensors`, `icon_mask`, `refresh_interval_ms`), so the sysmonitor/redraw hot path
@@ -57,36 +65,99 @@ pub fn light_theme() -> bool {
     read_dword(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "SystemUsesLightTheme") == Some(1)
 }
 
+/// The logon task is the only autostart that works here: Windows blocks elevated programs in
+/// the per-user Run key and Startup folder, and the manifest requires administrator. A task
+/// registered with the highest run level starts the app without a UAC prompt.
 pub fn autostart_enabled() -> bool {
-    let (k, v) = (wide(RUN_KEY), wide(RUN_VALUE));
-    let mut size = 0u32;
+    let Some(folder) = task_folder() else { return false };
+    let Ok(exe) = std::env::current_exe() else { return false };
+    // A task left over from an older path (the exe was moved) would start nothing.
+    task_exe(&folder).is_some_and(|task_exe| task_exe.as_str() == exe.to_string_lossy().as_ref())
+}
+
+/// Path the existing task runs, or None when there is no enabled task.
+fn task_exe(folder: &ITaskFolder) -> Option<String> {
     unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, null_mut(), null_mut(), &mut size)
-            == ERROR_SUCCESS
+        let task = folder.GetTask(&BSTR::from(TASK_NAME)).ok()?;
+        if !task.Enabled().ok()?.as_bool() {
+            return None;
+        }
+        let action = task.Definition().ok()?.Actions().ok()?.get_Item(1).ok()?.cast::<IExecAction>().ok()?;
+        let mut path = BSTR::new();
+        action.Path(&mut path).ok()?;
+        Some(path.to_string())
     }
 }
 
 pub fn set_autostart(on: bool) {
-    let (k, v) = (wide(RUN_KEY), wide(RUN_VALUE));
-    unsafe {
-        if on {
-            let Ok(exe) = std::env::current_exe() else { return };
-            let data = wide(&format!("\"{}\"", exe.display()));
-            RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), REG_SZ, data.as_ptr() as *const c_void, (data.len() * 2) as u32);
-        } else {
-            RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr());
+    if on {
+        if !register_task() {
+            crate::diag::event("autostart", "could not register the logon task");
         }
+    } else if let Some(folder) = task_folder() {
+        let _ = unsafe { folder.DeleteTask(&BSTR::from(TASK_NAME), 0) };
     }
-    write_dword(APP_KEY, "AutostartOptOut", u32::from(!on));
+    drop_legacy_autostart();
 }
 
-/// Release builds register themselves to start with Windows (and refresh the path if the
-/// exe moved), unless the user turned it off from the menu.
-pub fn ensure_autostart() {
-    if cfg!(debug_assertions) || read_dword(APP_KEY, "AutostartOptOut") == Some(1) {
-        return;
+/// Older versions registered in the Run key, which Windows never actually started for this
+/// elevated app. Removed so it stops showing up as a dead entry in Task Manager.
+pub fn drop_legacy_autostart() {
+    let (k, v) = (wide(RUN_KEY), wide(RUN_VALUE));
+    unsafe {
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr());
     }
-    set_autostart(true);
+}
+
+/// Requires COM initialized on the calling thread (`crate::init_com` in `widget::run`).
+fn task_folder() -> Option<ITaskFolder> {
+    unsafe {
+        let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER).ok()?;
+        let empty = VARIANT::default();
+        service.Connect(&empty, &empty, &empty, &empty).ok()?;
+        service.GetFolder(&BSTR::from("\\")).ok()
+    }
+}
+
+fn register_task() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let exe = exe.to_string_lossy().into_owned();
+    unsafe {
+        let register = || -> windows::core::Result<()> {
+            let service: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)?;
+            let empty = VARIANT::default();
+            service.Connect(&empty, &empty, &empty, &empty)?;
+            let folder = service.GetFolder(&BSTR::from("\\"))?;
+            let def = service.NewTask(0)?;
+            let principal = def.Principal()?;
+            principal.SetLogonType(TASK_LOGON_INTERACTIVE_TOKEN)?;
+            principal.SetRunLevel(TASK_RUNLEVEL_HIGHEST)?;
+            let settings = def.Settings()?;
+            // Defaults would skip the launch on battery and kill a tray app after three days.
+            settings.SetDisallowStartIfOnBatteries(VARIANT_FALSE)?;
+            settings.SetStopIfGoingOnBatteries(VARIANT_FALSE)?;
+            settings.SetExecutionTimeLimit(&BSTR::from("PT0S"))?;
+            let trigger: ILogonTrigger = def.Triggers()?.Create(TASK_TRIGGER_LOGON)?.cast()?;
+            trigger.SetStartBoundary(&BSTR::from("2024-01-01T00:00:00"))?;
+            let action: IExecAction = def.Actions()?.Create(TASK_ACTION_EXEC)?.cast()?;
+            action.SetPath(&BSTR::from(exe.as_str()))?;
+            if let Some(dir) = std::path::Path::new(&exe).parent() {
+                action.SetWorkingDirectory(&BSTR::from(dir.to_string_lossy().as_ref()))?;
+            }
+            let empty = VARIANT::default();
+            folder.RegisterTaskDefinition(
+                &BSTR::from(TASK_NAME),
+                &def,
+                TASK_CREATE_OR_UPDATE.0,
+                &empty,
+                &empty,
+                TASK_LOGON_INTERACTIVE_TOKEN,
+                &empty,
+            )?;
+            Ok(())
+        };
+        register().is_ok()
+    }
 }
 
 pub fn alerts_enabled() -> bool {
