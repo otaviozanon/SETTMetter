@@ -111,11 +111,11 @@ pub fn install() -> Result<(), String> {
 
 /// Removes the files a previous self-update left behind.
 pub fn cleanup() {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in ["SETTMetter.old.exe", "SETTMetter.new.exe"] {
-                let _ = std::fs::remove_file(dir.join(name));
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for name in ["SETTMetter.old.exe", "SETTMetter.new.exe"] {
+            let _ = std::fs::remove_file(dir.join(name));
         }
     }
 }

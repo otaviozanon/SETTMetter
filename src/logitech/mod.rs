@@ -214,10 +214,10 @@ fn identify(link: &dyn Hidpp, index: u8, ep: &Endpoint, via_receiver: bool) -> I
 
     // Model ids hold the device's PIDs per transport; used to find its G HUB curve.
     let mut pids = if via_receiver { Vec::new() } else { vec![ep.pid] };
-    if let Ok(Some(f)) = link.feature_index(index, DEVICE_FW_VERSION) {
-        if let Ok(r) = link.request(index, f, 0x0, &[]) {
-            pids.extend((0..3).map(|i| u16::from_be_bytes([r[7 + 2 * i], r[8 + 2 * i]])).filter(|p| *p != 0));
-        }
+    if let Ok(Some(f)) = link.feature_index(index, DEVICE_FW_VERSION)
+        && let Ok(r) = link.request(index, f, 0x0, &[])
+    {
+        pids.extend((0..3).map(|i| u16::from_be_bytes([r[7 + 2 * i], r[8 + 2 * i]])).filter(|p| *p != 0));
     }
 
     let fallback = if via_receiver { "Logitech device".to_string() } else { ep.product.clone() };

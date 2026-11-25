@@ -1,9 +1,9 @@
 [package]
 name = "SETTMetter"
-version = "1.3.0"
-edition = "2021"
+version = "1.4.0"
+edition = "2024"
 description = "Wireless device battery levels and system monitoring on the Windows taskbar"
-license = "MIT"
+license = "GPL-3.0-only"
 
 [dependencies]
 hidapi = "2.6"
@@ -36,6 +36,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_LibraryLoader",
@@ -46,9 +47,43 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# CoreAudio / IPolicyConfig / WinRT spatial sound, kept on its own version so the existing
+# 0.58 Bluetooth/DXGI code stays untouched. See src/audio.
+winaudio = { package = "windows", version = "0.61", features = [
+    "Foundation",
+    "Media_Audio",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+windows-core = "0.61"
 
 [build-dependencies]
 # Icon, version info and manifest (see build.rs).

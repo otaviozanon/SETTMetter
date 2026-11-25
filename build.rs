@@ -43,7 +43,7 @@ fn main() {
             .set_manifest(MANIFEST)
             .set("FileDescription", "SETTMetter")
             .set("ProductName", "SETTMetter")
-            .set("LegalCopyright", "© 2026 Renan Leonel. MIT License.");
+            .set("LegalCopyright", "© 2026 Renan Leonel, Otavio Zanon. GNU GPL v3.");
         res.compile().expect("failed to compile Windows resources (is the Windows SDK installed?)");
     }
 }

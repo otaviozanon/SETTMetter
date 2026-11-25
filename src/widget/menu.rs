@@ -2,6 +2,7 @@
 //! (diagnostics copy, device probing).
 
 use super::{readings, redraw, sys_snapshot, wake};
+use crate::audio::model::AppAction;
 use crate::{diag, notify, probe, settings, sysmonitor, update, wide};
 use std::mem::zeroed;
 use std::ptr::null;
@@ -51,7 +52,7 @@ const THRESHOLD_CHOICES: [u32; 7] = [60, 70, 75, 80, 85, 90, 95];
 
 /// What a preset does with each detected GPU's usage/temperature/VRAM checkboxes.
 #[derive(Clone, Copy)]
-enum GpuPreset {
+pub(super) enum GpuPreset {
     /// Show usage and temperature, hide VRAM.
     UsageAndTemp,
     /// Show usage only.
@@ -85,11 +86,23 @@ impl GpuPreset {
 /// (label, sensor mask, icon mask, GPU preset) quick presets, applied together from one click
 /// instead of unchecking sensors/icons one by one. CPU/RAM/GPU only — SSD and VRAM stay hidden
 /// in every preset; uncheck them manually in "System sensors" if you want them.
-const PRESETS: [(&str, u32, u32, GpuPreset); 3] = [
+pub(super) const PRESETS: [(&str, u32, u32, GpuPreset); 3] = [
     ("Full (usage + temperatures)", sysmonitor::BIT_CPU | sysmonitor::BIT_CPU_TEMP | sysmonitor::BIT_RAM, sysmonitor::ALL_ICONS, GpuPreset::UsageAndTemp),
     ("Usage only", sysmonitor::BIT_CPU | sysmonitor::BIT_RAM, sysmonitor::ALL_ICONS, GpuPreset::UsageOnly),
     ("Temperatures only", sysmonitor::BIT_CPU_TEMP, sysmonitor::ALL_ICONS, GpuPreset::TempOnly),
 ];
+
+/// Applies a quick preset to every sensor/icon/GPU toggle at once. Shared with the settings
+/// window, so both UIs do exactly the same thing.
+pub(super) fn apply_preset(index: usize) {
+    let Some((_, sensor_mask, icon_mask, gpu_preset)) = PRESETS.get(index).copied() else {
+        return;
+    };
+    settings::set_sensor_mask(sensor_mask);
+    settings::set_icon_mask(icon_mask);
+    let gpu_count = sys_snapshot().map(|s| s.gpus.len()).unwrap_or(0);
+    settings::set_hidden_gpu_sensors(gpu_preset.hidden_list(gpu_count));
+}
 
 pub(super) unsafe fn show_menu(hwnd: HWND) {
     let devices = readings();
@@ -289,6 +302,9 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     let alerts_label = wide("Alerts");
     AppendMenuW(menu, MF_POPUP, alert_menu as usize, alerts_label.as_ptr());
     labels.push(alerts_label);
+
+    // Audio: device lock, mic mute, enhancements, profiles, listen-to-this-device.
+    let audio_targets = build_audio_menu(menu, &mut labels, checked);
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
 
     let (refresh, autostart, exit) = (wide("Refresh now"), wide("Start with Windows"), wide("Exit"));
@@ -373,12 +389,7 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
             settings::set_gpu_alert_threshold(THRESHOLD_CHOICES[c - CMD_GPU_THRESHOLD_BASE]);
         }
         c if (CMD_PRESET_BASE..CMD_PRESET_BASE + PRESETS.len()).contains(&c) => {
-            let (_, sensor_mask, icon_mask, gpu_preset) = PRESETS[c - CMD_PRESET_BASE];
-            settings::set_sensor_mask(sensor_mask);
-            settings::set_icon_mask(icon_mask);
-            let gpu_count = sys_snapshot().map(|s| s.gpus.len()).unwrap_or(0);
-            settings::set_hidden_gpu_sensors(gpu_preset.hidden_list(gpu_count));
-            redraw();
+            apply_preset(c - CMD_PRESET_BASE);
         }
         c if (CMD_SCREEN_BASE..CMD_SCREEN_BASE + 32).contains(&c) => {
             super::select_screen((c - CMD_SCREEN_BASE) as u32);
@@ -395,6 +406,103 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
             settings::set_widget_offset(0);
             super::place();
         }
+        CMD_AUDIO_FLYOUT => super::open_flyout(),
+        CMD_AUDIO_MIC => {
+            if let Some(engine) = crate::audio::engine() {
+                engine.toggle_active_mics_mute();
+            }
+            redraw();
+        }
+        CMD_AUDIO_LOCK => apply_audio(AppAction::SetLockEnabled(!audio_state().lock_enabled)),
+        CMD_AUDIO_SEPARATE => apply_audio(AppAction::SetSeparateCommsRole(!audio_state().separate_comms_role)),
+        CMD_AUDIO_ENH_OFF => {
+            for device in audio_state().devices {
+                if device.flow == crate::audio::model::DeviceFlow::Output && device.enhancements.any_enabled() {
+                    apply_audio(AppAction::SetEnhancementsDisabled { device_id: device.id, disabled: true });
+                }
+            }
+        }
+        CMD_AUDIO_ENH_ON => apply_audio(AppAction::ReenableAllEnhancements),
+        CMD_AUDIO_ENH_AUTO => apply_audio(AppAction::SetAutoDisableEnhancements(!audio_state().auto_disable_enhancements)),
+        CMD_AUDIO_UNUSED_AUTO => apply_audio(AppAction::SetAutoDisableUnusedDevices(!audio_state().auto_disable_unused_devices)),
+        CMD_AUDIO_UNUSED_ON => apply_audio(AppAction::ReenableAllDevices),
+        CMD_AUDIO_SAVE_PROFILE => {
+            let name = format!("Profile {}", audio_state().profiles.len() + 1);
+            apply_audio(AppAction::SaveProfile { name });
+        }
+        c if (CMD_AUDIO_OUT_BASE..CMD_AUDIO_OUT_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.outputs.get(c - CMD_AUDIO_OUT_BASE) {
+                apply_audio(AppAction::SetDefault { flow: crate::audio::model::DeviceFlow::Output, device_id: device_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_IN_BASE..CMD_AUDIO_IN_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.inputs.get(c - CMD_AUDIO_IN_BASE) {
+                apply_audio(AppAction::SetDefault { flow: crate::audio::model::DeviceFlow::Input, device_id: device_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_OUT_MUTE_BASE..CMD_AUDIO_OUT_MUTE_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.outputs.get(c - CMD_AUDIO_OUT_MUTE_BASE) {
+                apply_audio(AppAction::ToggleMute { device_id: device_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_IN_MUTE_BASE..CMD_AUDIO_IN_MUTE_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.inputs.get(c - CMD_AUDIO_IN_MUTE_BASE) {
+                apply_audio(AppAction::ToggleMute { device_id: device_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_VOL_UP_BASE..CMD_AUDIO_VOL_UP_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.outputs.get(c - CMD_AUDIO_VOL_UP_BASE) {
+                adjust_audio_volume(device_id, 10);
+            }
+        }
+        c if (CMD_AUDIO_VOL_DN_BASE..CMD_AUDIO_VOL_DN_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.outputs.get(c - CMD_AUDIO_VOL_DN_BASE) {
+                adjust_audio_volume(device_id, -10);
+            }
+        }
+        c if (CMD_AUDIO_IN_VOL_UP_BASE..CMD_AUDIO_IN_VOL_UP_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.inputs.get(c - CMD_AUDIO_IN_VOL_UP_BASE) {
+                adjust_audio_volume(device_id, 10);
+            }
+        }
+        c if (CMD_AUDIO_IN_VOL_DN_BASE..CMD_AUDIO_IN_VOL_DN_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.inputs.get(c - CMD_AUDIO_IN_VOL_DN_BASE) {
+                adjust_audio_volume(device_id, -10);
+            }
+        }
+        c if (CMD_AUDIO_PIN_BASE..CMD_AUDIO_PIN_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.pins.get(c - CMD_AUDIO_PIN_BASE) {
+                apply_audio(AppAction::ToggleDevicePin { device_id: device_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_PROFILE_BASE..CMD_AUDIO_PROFILE_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(profile_id) = audio_targets.profiles.get(c - CMD_AUDIO_PROFILE_BASE) {
+                apply_audio(AppAction::ApplyProfile { profile_id: profile_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_PROFILE_DEL_BASE..CMD_AUDIO_PROFILE_DEL_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(profile_id) = audio_targets.profiles.get(c - CMD_AUDIO_PROFILE_DEL_BASE) {
+                apply_audio(AppAction::DeleteProfile { profile_id: profile_id.clone() });
+            }
+        }
+        c if (CMD_AUDIO_LISTEN_BASE..CMD_AUDIO_LISTEN_BASE + 4 * AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some((device_id, target)) = audio_targets.listen.get(c - CMD_AUDIO_LISTEN_BASE) {
+                apply_audio(AppAction::SetListenEnabled { device_id: device_id.clone(), enabled: target.is_some() });
+                apply_audio(AppAction::SetListenTarget { device_id: device_id.clone(), target_device_id: target.clone() });
+            }
+        }
+        c if (CMD_AUDIO_ENH_DEVICE_BASE..CMD_AUDIO_ENH_DEVICE_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.enhancements.get(c - CMD_AUDIO_ENH_DEVICE_BASE) {
+                let disabled = audio_state().device(device_id).is_none_or(|d| d.enhancements.any_enabled());
+                apply_audio(AppAction::SetEnhancementsDisabled { device_id: device_id.clone(), disabled });
+            }
+        }
+        c if (CMD_AUDIO_HIDDEN_BASE..CMD_AUDIO_HIDDEN_BASE + AUDIO_LIST_LIMIT).contains(&c) => {
+            if let Some(device_id) = audio_targets.hidden.get(c - CMD_AUDIO_HIDDEN_BASE) {
+                let disabled = audio_state().device(device_id).is_some_and(|d| d.disabled);
+                apply_audio(AppAction::SetDeviceDisabled { device_id: device_id.clone(), disabled: !disabled });
+            }
+        }
         c if c >= CMD_DEVICE_BASE => {
             if let Some(r) = devices.get(c - CMD_DEVICE_BASE) {
                 settings::toggle_hidden(&r.id);
@@ -405,15 +513,295 @@ pub(super) unsafe fn show_menu(hwnd: HWND) {
     }
 }
 
+// Audio commands live above every other range; the `c >= CMD_DEVICE_BASE` arm below must stay
+// last because it is a catch-all.
+const CMD_AUDIO_MIC: usize = 1000;
+const CMD_AUDIO_LOCK: usize = 1001;
+const CMD_AUDIO_SEPARATE: usize = 1002;
+const CMD_AUDIO_ENH_OFF: usize = 1003;
+const CMD_AUDIO_ENH_ON: usize = 1004;
+const CMD_AUDIO_ENH_AUTO: usize = 1005;
+const CMD_AUDIO_UNUSED_AUTO: usize = 1006;
+const CMD_AUDIO_UNUSED_ON: usize = 1007;
+const CMD_AUDIO_SAVE_PROFILE: usize = 1008;
+const CMD_AUDIO_FLYOUT: usize = 1009;
+const CMD_AUDIO_OUT_BASE: usize = 1100;
+const CMD_AUDIO_IN_BASE: usize = 1140;
+const CMD_AUDIO_OUT_MUTE_BASE: usize = 1180;
+const CMD_AUDIO_IN_MUTE_BASE: usize = 1220;
+const CMD_AUDIO_PIN_BASE: usize = 1260;
+const CMD_AUDIO_PROFILE_BASE: usize = 1320;
+const CMD_AUDIO_PROFILE_DEL_BASE: usize = 1360;
+const CMD_AUDIO_LISTEN_BASE: usize = 1400;
+const CMD_AUDIO_VOL_UP_BASE: usize = 1700;
+const CMD_AUDIO_VOL_DN_BASE: usize = 1740;
+const CMD_AUDIO_IN_VOL_UP_BASE: usize = 1780;
+const CMD_AUDIO_IN_VOL_DN_BASE: usize = 1820;
+const CMD_AUDIO_ENH_DEVICE_BASE: usize = 1860;
+const CMD_AUDIO_HIDDEN_BASE: usize = 1900;
+/// How many entries each of the ranges above can hold.
+const AUDIO_LIST_LIMIT: usize = 40;
+
+/// Device/profile ids behind the command ids built by [`build_audio_menu`], indexed by
+/// `command - base`.
+#[derive(Default)]
+struct AudioTargets {
+    outputs: Vec<String>,
+    inputs: Vec<String>,
+    profiles: Vec<String>,
+    listen: Vec<(String, Option<String>)>,
+    pins: Vec<String>,
+    enhancements: Vec<String>,
+    hidden: Vec<String>,
+}
+
+unsafe fn apply_audio(action: crate::audio::model::AppAction) {
+    if let Some(engine) = crate::audio::engine() {
+        engine.apply_action(action);
+    }
+    redraw();
+}
+
+fn audio_state() -> crate::audio::model::AppState {
+    crate::audio::engine().map(|e| e.snapshot()).unwrap_or_default()
+}
+
+unsafe fn adjust_audio_volume(device_id: &str, delta: i16) {
+    let current = audio_state().device(device_id).map(|d| d.volume).unwrap_or(0) as i16;
+    let volume = (current + delta).clamp(0, 100) as u8;
+    apply_audio(AppAction::SetVolume { device_id: device_id.to_string(), volume });
+}
+
+/// Appends the "Audio" submenu and returns the id lists its command ids refer to.
+unsafe fn build_audio_menu(menu: HMENU, labels: &mut Vec<Vec<u16>>, checked: impl Fn(bool) -> u32) -> AudioTargets {
+    use crate::audio::model::DeviceFlow;
+
+    let mut t = AudioTargets::default();
+    let Some(engine) = crate::audio::engine() else { return t };
+    let state = engine.snapshot();
+    let audio = CreatePopupMenu();
+
+    let panel_label = wide("Open audio panel");
+    AppendMenuW(audio, MF_STRING, CMD_AUDIO_FLYOUT, panel_label.as_ptr());
+    labels.push(panel_label);
+    AppendMenuW(audio, MF_SEPARATOR, 0, null());
+
+    let active_mics: Vec<_> = state
+        .devices
+        .iter()
+        .filter(|d| {
+            d.flow == DeviceFlow::Input
+                && (d.id == state.roles.default_input_id
+                    || (state.separate_comms_role && d.id == state.roles.comms_input_id))
+        })
+        .collect();
+    let any_unmuted = active_mics.iter().any(|d| !d.muted);
+    let mic_label = wide(if any_unmuted { "Mute microphone" } else { "Unmute microphone" });
+    let mic_flags = if active_mics.is_empty() { MF_GRAYED } else { 0 };
+    AppendMenuW(audio, MF_STRING | mic_flags, CMD_AUDIO_MIC, mic_label.as_ptr());
+    labels.push(mic_label);
+
+    let lock_label = wide("Lock default devices");
+    AppendMenuW(audio, MF_STRING | checked(state.lock_enabled), CMD_AUDIO_LOCK, lock_label.as_ptr());
+    labels.push(lock_label);
+    let separate_label = wide("Separate communications device");
+    AppendMenuW(audio, MF_STRING | checked(state.separate_comms_role), CMD_AUDIO_SEPARATE, separate_label.as_ptr());
+    labels.push(separate_label);
+    AppendMenuW(audio, MF_SEPARATOR, 0, null());
+
+    let outputs: Vec<_> = state.devices.iter().filter(|d| d.flow == DeviceFlow::Output).collect();
+    let inputs: Vec<_> = state.devices.iter().filter(|d| d.flow == DeviceFlow::Input).collect();
+
+    let out_menu = CreatePopupMenu();
+    for (i, d) in outputs.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+        let device_menu = CreatePopupMenu();
+        let default_label = wide("Set as default");
+        AppendMenuW(device_menu, MF_STRING | checked(d.id == state.roles.default_output_id), CMD_AUDIO_OUT_BASE + i, default_label.as_ptr());
+        labels.push(default_label);
+        let level_label = wide(&format!("Volume: {}%", d.volume));
+        AppendMenuW(device_menu, MF_STRING | MF_GRAYED, 0, level_label.as_ptr());
+        labels.push(level_label);
+        let up = wide("Volume up 10%");
+        let down = wide("Volume down 10%");
+        AppendMenuW(device_menu, MF_STRING, CMD_AUDIO_VOL_UP_BASE + i, up.as_ptr());
+        AppendMenuW(device_menu, MF_STRING, CMD_AUDIO_VOL_DN_BASE + i, down.as_ptr());
+        labels.extend([up, down]);
+        let mute_label = wide("Mute");
+        AppendMenuW(device_menu, MF_STRING | checked(d.muted), CMD_AUDIO_OUT_MUTE_BASE + i, mute_label.as_ptr());
+        labels.push(mute_label);
+        let muted = if d.muted { ", muted" } else { "" };
+        let label = wide(&format!("{}  ({}%{})", d.name, d.volume, muted));
+        AppendMenuW(out_menu, MF_POPUP, device_menu as usize, label.as_ptr());
+        labels.push(label);
+        t.outputs.push(d.id.clone());
+    }
+    if outputs.is_empty() {
+        let label = wide("No output devices");
+        AppendMenuW(out_menu, MF_STRING | MF_GRAYED, 0, label.as_ptr());
+        labels.push(label);
+    }
+    let out_label = wide("Output devices");
+    AppendMenuW(audio, MF_POPUP, out_menu as usize, out_label.as_ptr());
+    labels.push(out_label);
+
+    let in_menu = CreatePopupMenu();
+    for (i, d) in inputs.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+        let device_menu = CreatePopupMenu();
+        let default_label = wide("Set as default");
+        AppendMenuW(device_menu, MF_STRING | checked(d.id == state.roles.default_input_id), CMD_AUDIO_IN_BASE + i, default_label.as_ptr());
+        labels.push(default_label);
+        let level_label = wide(&format!("Volume: {}%", d.volume));
+        AppendMenuW(device_menu, MF_STRING | MF_GRAYED, 0, level_label.as_ptr());
+        labels.push(level_label);
+        let up = wide("Volume up 10%");
+        let down = wide("Volume down 10%");
+        AppendMenuW(device_menu, MF_STRING, CMD_AUDIO_IN_VOL_UP_BASE + i, up.as_ptr());
+        AppendMenuW(device_menu, MF_STRING, CMD_AUDIO_IN_VOL_DN_BASE + i, down.as_ptr());
+        labels.extend([up, down]);
+        let mute_label = wide("Mute");
+        AppendMenuW(device_menu, MF_STRING | checked(d.muted), CMD_AUDIO_IN_MUTE_BASE + i, mute_label.as_ptr());
+        labels.push(mute_label);
+        let muted = if d.muted { ", muted" } else { "" };
+        let label = wide(&format!("{}  ({}%{})", d.name, d.volume, muted));
+        AppendMenuW(in_menu, MF_POPUP, device_menu as usize, label.as_ptr());
+        labels.push(label);
+        t.inputs.push(d.id.clone());
+    }
+    if inputs.is_empty() {
+        let label = wide("No input devices");
+        AppendMenuW(in_menu, MF_STRING | MF_GRAYED, 0, label.as_ptr());
+        labels.push(label);
+    }
+    let in_label = wide("Input devices");
+    AppendMenuW(audio, MF_POPUP, in_menu as usize, in_label.as_ptr());
+    labels.push(in_label);
+
+    // Pins keep a device enabled while "disable unused devices" is on.
+    let pin_menu = CreatePopupMenu();
+    for (i, d) in state.devices.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+        let label = wide(&d.name);
+        AppendMenuW(pin_menu, MF_STRING | checked(d.pinned), CMD_AUDIO_PIN_BASE + i, label.as_ptr());
+        labels.push(label);
+        t.pins.push(d.id.clone());
+    }
+    let pin_label = wide("Pinned devices");
+    AppendMenuW(audio, MF_POPUP, pin_menu as usize, pin_label.as_ptr());
+    labels.push(pin_label);
+
+    // Enhancements: all-off/all-on plus a per-output-device checkbox (checked = disabled).
+    let enh_menu = CreatePopupMenu();
+    let off_label = wide("Disable all");
+    let on_label = wide("Re-enable all");
+    let auto_enh_label = wide("Auto-disable for new devices");
+    AppendMenuW(enh_menu, MF_STRING, CMD_AUDIO_ENH_OFF, off_label.as_ptr());
+    AppendMenuW(enh_menu, MF_STRING, CMD_AUDIO_ENH_ON, on_label.as_ptr());
+    AppendMenuW(enh_menu, MF_STRING | checked(state.auto_disable_enhancements), CMD_AUDIO_ENH_AUTO, auto_enh_label.as_ptr());
+    labels.extend([off_label, on_label, auto_enh_label]);
+    let per_device = CreatePopupMenu();
+    for (i, d) in outputs.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+        let label = wide(&d.name);
+        AppendMenuW(per_device, MF_STRING | checked(!d.enhancements.any_enabled()), CMD_AUDIO_ENH_DEVICE_BASE + i, label.as_ptr());
+        labels.push(label);
+        t.enhancements.push(d.id.clone());
+    }
+    let per_device_label = wide("Per device");
+    AppendMenuW(enh_menu, MF_POPUP, per_device as usize, per_device_label.as_ptr());
+    labels.push(per_device_label);
+    let enh_label = wide("Audio enhancements");
+    AppendMenuW(audio, MF_POPUP, enh_menu as usize, enh_label.as_ptr());
+    labels.push(enh_label);
+
+    // Hide unused devices: auto toggle, bulk re-enable, and a per-device checkbox.
+    let unused_menu = CreatePopupMenu();
+    let auto_unused_label = wide("Auto-disable unused devices");
+    let reenable_label = wide("Re-enable all devices");
+    AppendMenuW(unused_menu, MF_STRING | checked(state.auto_disable_unused_devices), CMD_AUDIO_UNUSED_AUTO, auto_unused_label.as_ptr());
+    AppendMenuW(unused_menu, MF_STRING, CMD_AUDIO_UNUSED_ON, reenable_label.as_ptr());
+    labels.extend([auto_unused_label, reenable_label]);
+    for (i, d) in state.devices.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+        let label = wide(&d.name);
+        AppendMenuW(unused_menu, MF_STRING | checked(d.disabled), CMD_AUDIO_HIDDEN_BASE + i, label.as_ptr());
+        labels.push(label);
+        t.hidden.push(d.id.clone());
+    }
+    let unused_label = wide("Unused devices");
+    AppendMenuW(audio, MF_POPUP, unused_menu as usize, unused_label.as_ptr());
+    labels.push(unused_label);
+
+    // Listen to this device: one submenu per input, None / default output / every output.
+    let listen_menu = CreatePopupMenu();
+    for d in &inputs {
+        let current = d.listen.as_ref().filter(|l| l.enabled).and_then(|l| l.target_device_id.clone());
+        let device_menu = CreatePopupMenu();
+        let none = wide("None");
+        AppendMenuW(device_menu, MF_STRING | checked(current.is_none()), CMD_AUDIO_LISTEN_BASE + t.listen.len(), none.as_ptr());
+        labels.push(none);
+        t.listen.push((d.id.clone(), None));
+        let default_out = wide("Default output");
+        AppendMenuW(device_menu, MF_STRING | checked(current.as_deref() == Some(crate::audio::model::LISTEN_TARGET_DEFAULT_OUTPUT)), CMD_AUDIO_LISTEN_BASE + t.listen.len(), default_out.as_ptr());
+        labels.push(default_out);
+        t.listen.push((d.id.clone(), Some(crate::audio::model::LISTEN_TARGET_DEFAULT_OUTPUT.to_string())));
+        for out in &outputs {
+            let label = wide(&out.name);
+            AppendMenuW(device_menu, MF_STRING | checked(current.as_deref() == Some(out.id.as_str())), CMD_AUDIO_LISTEN_BASE + t.listen.len(), label.as_ptr());
+            labels.push(label);
+            t.listen.push((d.id.clone(), Some(out.id.clone())));
+        }
+        let label = wide(&d.name);
+        AppendMenuW(listen_menu, MF_POPUP, device_menu as usize, label.as_ptr());
+        labels.push(label);
+    }
+    let listen_label = wide("Listen to this device");
+    AppendMenuW(audio, MF_POPUP, listen_menu as usize, listen_label.as_ptr());
+    labels.push(listen_label);
+
+    // Profiles: apply, save the current setup, delete.
+    let profile_menu = CreatePopupMenu();
+    for (i, p) in state.profiles.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+        let label = wide(&p.name);
+        AppendMenuW(profile_menu, MF_STRING | checked(state.active_profile_id.as_deref() == Some(p.id.as_str())), CMD_AUDIO_PROFILE_BASE + i, label.as_ptr());
+        labels.push(label);
+        t.profiles.push(p.id.clone());
+    }
+    if !state.profiles.is_empty() {
+        AppendMenuW(profile_menu, MF_SEPARATOR, 0, null());
+    }
+    let save_label = wide("Save current setup");
+    AppendMenuW(profile_menu, MF_STRING, CMD_AUDIO_SAVE_PROFILE, save_label.as_ptr());
+    labels.push(save_label);
+    if !state.profiles.is_empty() {
+        let delete_menu = CreatePopupMenu();
+        for (i, p) in state.profiles.iter().enumerate().take(AUDIO_LIST_LIMIT) {
+            let label = wide(&p.name);
+            AppendMenuW(delete_menu, MF_STRING, CMD_AUDIO_PROFILE_DEL_BASE + i, label.as_ptr());
+            labels.push(label);
+        }
+        let delete_label = wide("Delete");
+        AppendMenuW(profile_menu, MF_POPUP, delete_menu as usize, delete_label.as_ptr());
+        labels.push(delete_label);
+    }
+    let profile_label = wide("Profiles");
+    AppendMenuW(audio, MF_POPUP, profile_menu as usize, profile_label.as_ptr());
+    labels.push(profile_label);
+
+    let audio_label = wide("Audio");
+    AppendMenuW(menu, MF_POPUP, audio as usize, audio_label.as_ptr());
+    labels.push(audio_label);
+    t
+}
+
 /// Position of `bit` in `sysmonitor::ICON_NAMES`, for the menu command id.
-fn icon_index(bit: u32) -> usize {
-    sysmonitor::ICON_NAMES.iter().position(|(_, b)| *b == bit).unwrap_or(0)
+fn icon_index(bit: u32) -> usize {    sysmonitor::ICON_NAMES.iter().position(|(_, b)| *b == bit).unwrap_or(0)
 }
 
 static PROBING: AtomicBool = AtomicBool::new(false);
 
+pub(super) fn probing() -> bool {
+    PROBING.load(Ordering::Relaxed)
+}
+
 /// Runs the device probe in the background, then opens its file in Notepad.
-fn start_probe() {
+pub(super) fn start_probe() {
     if PROBING.swap(true, Ordering::Relaxed) {
         return;
     }
@@ -437,7 +825,7 @@ fn start_probe() {
 }
 
 /// Puts the diagnostics log on the clipboard and confirms with a toast.
-unsafe fn copy_diagnostics(hwnd: HWND) {
+pub(super) unsafe fn copy_diagnostics(hwnd: HWND) {
     let (title, body) = match diag::report() {
         Some(text) if set_clipboard(hwnd, &text) => ("Diagnostics copied", "Paste them into your device report on GitHub."),
         Some(_) => ("Couldn't copy diagnostics", "Another app is using the clipboard. Try again."),

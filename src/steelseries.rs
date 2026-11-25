@@ -83,7 +83,8 @@ impl SteelSeries {
         self.skip.retain(|path| present.iter().any(|(p, _)| p == path));
 
         // The command collection is the one on that interface with an output report.
-        for (path, &(pid, name, _, protocol)) in &present {
+        for (path, info) in &present {
+            let (pid, name, _, protocol) = **info;
             if self.open.contains_key(path) || self.skip.contains(path) || self.open.values().any(|m| m.pid == pid) {
                 continue;
             }

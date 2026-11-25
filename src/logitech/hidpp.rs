@@ -192,10 +192,10 @@ impl<T: Transport> Hidpp for Link<T> {
             }
             let slice = remaining.min(Duration::from_millis(10)).as_millis() as i32;
             let n = self.long.read_timeout(&mut rx, slice)?;
-            if n > 0 {
-                if let Some(r) = reply(&rx[..n], index, feature_idx, func_sw) {
-                    return r;
-                }
+            if n > 0
+                && let Some(r) = reply(&rx[..n], index, feature_idx, func_sw)
+            {
+                return r;
             }
         }
     }

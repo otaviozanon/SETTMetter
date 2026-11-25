@@ -159,7 +159,8 @@ impl Razer {
         self.skip.retain(|path| present.iter().any(|(p, _)| p == path));
 
         // Each device has one collection with the 90-byte feature report.
-        for (path, &(pid, name, tid, wait_ms, charging, kind)) in &present {
+        for (path, info) in &present {
+            let (pid, name, tid, wait_ms, charging, kind) = **info;
             if self.open.contains_key(path) || self.skip.contains(path) || self.open.values().any(|m| m.pid == pid) {
                 continue;
             }

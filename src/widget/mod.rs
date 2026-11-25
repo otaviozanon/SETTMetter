@@ -7,9 +7,11 @@
 //! - A worker thread scans devices and posts WM_APP_UPDATE to the controller.
 
 mod menu;
+mod settings_ui;
 mod tray;
 
 use crate::device::{Reading, Status, Tracker};
+use crate::flyout;
 use crate::{areson, asus, bluetooth, corsair, corsair_slipstream, delux, device, diag, glorious, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, update, wide, xbox};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
@@ -29,8 +31,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const WM_APP_UPDATE: u32 = WM_APP + 1;
 const WM_APP_MENU: u32 = WM_APP + 2;
+/// Posted by the audio worker (src/audio/win32.rs) when devices, defaults or mutes change.
+const WM_APP_AUDIO: u32 = 0x0401;
 /// Close this instance after a successful driver install; a relaunched one is already waiting.
 const WM_APP_EXIT: u32 = WM_APP + 3;
+/// Opens the custom settings window (right-click on the widget or the fallback tray icon).
+const WM_APP_SETTINGS: u32 = WM_APP + 4;
 const TIMER_PLACE: usize = 1;
 /// WM_POWERBROADCAST: resumed from sleep/hibernate.
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
@@ -57,6 +63,12 @@ struct App {
     size: (i32, i32),
     /// Taskbar layout the current bitmap was rendered for.
     layout: Option<render::Layout>,
+    /// Clickable rect of the microphone segment from the last render, in widget coordinates.
+    mic: Option<(i32, i32, i32, i32)>,
+    /// Created once the audio engine is up; lives on this thread like the rest of the UI.
+    flyout: Option<flyout::FlyoutController>,
+    /// The custom settings window; recreated on demand, destroyed when it loses focus.
+    settings: Option<settings_ui::SettingsWindow>,
 }
 
 thread_local! {
@@ -69,6 +81,9 @@ thread_local! {
             light: false,
             size: (0, 0),
             layout: None,
+            mic: None,
+            flyout: None,
+            settings: None,
         })
     };
 }
@@ -119,6 +134,13 @@ pub fn run() {
         let (tx, rx) = mpsc::channel();
         let _ = WAKE.set(tx);
         let controller_addr = controller as usize;
+        crate::audio::start(controller_addr as isize);
+        if let Some(engine) = crate::audio::engine() {
+            with(|a| a.flyout = Some(flyout::FlyoutController::new(engine, controller as isize)));
+        }
+        if settings::mute_shortcut().is_some() {
+            crate::hotkey::install(controller as isize);
+        }
         // 64 KiB stacks instead of Rust's 2 MiB default:
         // neither loop recurses or keeps large locals, so the extra reserved address space
         // and committed guard pages were pure waste.
@@ -360,7 +382,7 @@ fn restart(controller: usize) {
 }
 
 /// Closes the tray icon and both windows, which ends the message loop.
-pub(super) unsafe fn shutdown(hwnd: HWND) {
+pub(crate) unsafe fn shutdown(hwnd: HWND) {
     tray::set_tray_icon(false);
     let widget = with(|a| a.widget);
     if !widget.is_null() {
@@ -587,17 +609,46 @@ unsafe fn redraw() {
             lines.push(format!("Top GPU: {name} ({pct:.0}%)"));
         }
     }
-    set_tooltip_text(&lines);
-    let all_hidden = items.is_empty() && sys.as_ref().is_none_or(|s| s.all_hidden());
-    tray::set_tray_icon(all_hidden);
-    let size = if items.is_empty() && sys.is_none() {
-        (0, 0)
+    let audio = crate::audio::engine().map(|engine| engine.snapshot());
+    if let Some(state) = &audio {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        let name_of = |id: &str| state.device(id).map(|d| d.name.clone()).unwrap_or_else(|| "none".to_string());
+        lines.push(format!("Output: {} ({})", name_of(&state.roles.default_output_id), if state.lock_enabled { "locked" } else { "unlocked" }));
+        let mic = state.device(&state.roles.default_input_id);
+        let mic_name = name_of(&state.roles.default_input_id);
+        lines.push(format!("Mic: {mic_name} ({})", if mic.is_some_and(|d| d.muted) { "muted" } else { "live" }));
+    }
+    // `Some(muted)` when there is an active microphone to show and toggle. Always the Windows
+    // endpoint state: with Discord sync on, Break (or our click) toggles this AND Discord.
+    let mic = if settings::show_mic() {
+        audio.and_then(|state| {
+            let has_mic = state.devices.iter().any(|d| {
+                d.flow == crate::audio::model::DeviceFlow::Input
+                    && (d.id == state.roles.default_input_id || d.id == state.roles.comms_input_id)
+            });
+            has_mic.then(|| state.are_active_mics_muted())
+        })
     } else {
-        render::draw(widget, &items, sys.as_ref(), settings::icon_mask(), dpi, layout, light)
+        None
     };
+    set_tooltip_text(&lines);
+    let all_hidden = items.is_empty() && sys.as_ref().is_none_or(|s| s.all_hidden()) && mic.is_none();
+    tray::set_tray_icon(all_hidden);
+    let rendered = if items.is_empty() && sys.is_none() && mic.is_none() {
+        render::Rendered {
+            size: (0, 0),
+            mic: None,
+        }
+    } else {
+        render::draw(widget, &items, sys.as_ref(), settings::icon_mask(), dpi, layout, light, mic)
+    };
+    let size = rendered.size;
     with(|a| {
         a.size = size;
         a.layout = Some(layout);
+        a.mic = rendered.mic;
     });
     place();
 }
@@ -672,7 +723,15 @@ pub(super) unsafe fn place() {
 unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let taskbar_created = with(|a| a.taskbar_created);
     match msg {
-        WM_APP_UPDATE => redraw(),
+        WM_APP_UPDATE => {
+            redraw();
+            with_settings(|window| window.invalidate());
+        }
+        WM_APP_AUDIO => {
+            redraw();
+            with_flyout(|flyout| flyout.invalidate());
+            with_settings(|window| window.invalidate());
+        }
         WM_TIMER => {
             ensure_widget();
             place();
@@ -692,6 +751,21 @@ unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
             return 1;
         }
         WM_APP_MENU => menu::show_menu(hwnd),
+        crate::hotkey::WM_APP_MUTE_KEY => {
+            // Physical shortcut: mute the Windows microphone. An app bound to the same key
+            // (Discord) reacts on its own.
+            if let Some(engine) = crate::audio::engine() {
+                engine.toggle_active_mics_mute();
+            }
+            redraw();
+        }
+        WM_APP_SETTINGS => {
+            // The tray icon callback fires for every mouse message; only open on a real click.
+            let mouse = lp as u32;
+            if mouse == WM_LBUTTONUP || mouse == WM_RBUTTONUP {
+                settings_ui::open();
+            }
+        }
         WM_APP_EXIT => shutdown(hwnd),
         WM_DESTROY => PostQuitMessage(0),
         m if m == taskbar_created && m != 0 => {
@@ -704,11 +778,67 @@ unsafe extern "system" fn controller_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: 
     0
 }
 
+/// Opens (or closes) the audio flyout next to the cursor, from a widget click or the menu.
+pub(super) fn open_flyout() {
+    let mut point: POINT = unsafe { zeroed() };
+    unsafe { GetCursorPos(&mut point) };
+    // The controller is moved out of `App` for the call: creating/focusing a window dispatches
+    // messages back into our procs, which borrow `App` again.
+    with_flyout(|flyout| flyout.open_or_toggle((point.x, point.y)));
+}
+
+/// Runs `f` on the flyout with `App` not borrowed.
+fn with_flyout(f: impl FnOnce(&mut flyout::FlyoutController)) {
+    let Some(mut controller) = with(|a| a.flyout.take()) else {
+        return;
+    };
+    f(&mut controller);
+    with(|a| a.flyout = Some(controller));
+}
+
+/// Runs `f` on the settings window with `App` not borrowed.
+fn with_settings(f: impl FnOnce(&settings_ui::SettingsWindow)) {
+    let Some(window) = with(|a| a.settings.take()) else {
+        return;
+    };
+    f(&window);
+    with(|a| a.settings = Some(window));
+}
+
+/// True when the click landed on the microphone segment of the widget.
+fn on_mic(lp: LPARAM) -> bool {
+    let x = (lp & 0xFFFF) as i16 as i32;
+    let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
+    with(|a| a.mic).is_some_and(|(mx, my, mw, mh)| {
+        x >= mx && x < mx + mw && y >= my && y < my + mh
+    })
+}
+
 unsafe extern "system" fn widget_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_LBUTTONUP => {
+            // Only the mic glyph reacts to a left click; the rest of the widget ignores it.
+            if on_mic(lp) {
+                if let Some((vk, mods)) = settings::mute_shortcut()
+                    && crate::hotkey::discord_running()
+                {
+                    // Send the same key so an app bound to it (Discord) follows the click.
+                    crate::hotkey::send_shortcut(vk, mods);
+                }
+                if let Some(engine) = crate::audio::engine() {
+                    engine.toggle_active_mics_mute();
+                }
+                redraw();
+            }
+            0
+        }
         WM_RBUTTONUP => {
-            let controller = with(|a| a.controller);
-            PostMessageW(controller, WM_APP_MENU, 0, 0);
+            // Right click on the mic opens the audio panel; anywhere else, the settings window.
+            if on_mic(lp) {
+                open_flyout();
+            } else {
+                settings_ui::open();
+            }
             0
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,

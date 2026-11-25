@@ -31,6 +31,18 @@ fn icon(kind: Kind) -> &'static str {
     }
 }
 
+/// Microphone glyph, appended after the sensors as its own clickable segment.
+const MIC_GLYPH: &str = "\u{E720}";
+/// Item index that never collides with a device or the sensor group.
+const MIC_ITEM: usize = usize::MAX;
+
+/// What a render produced, beyond the bitmap already pushed to the window.
+pub struct Rendered {
+    pub size: (i32, i32),
+    /// Clickable microphone segment, in widget coordinates.
+    pub mic: Option<(i32, i32, i32, i32)>,
+}
+
 struct Seg {
     text: Vec<u16>,
     icon: bool,
@@ -64,7 +76,8 @@ const ICON_RAM_GLYPH: &str = "\u{EEA0}";
 const ICON_VRAM_GLYPH: &str = "\u{E964}";
 const ICON_DISK_GLYPH: &str = "\u{EDA2}";
 
-/// Renders the widget and returns its (width, height) in physical pixels.
+/// Renders the widget and returns its size plus the mic click target.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn draw(
     hwnd: HWND,
     items: &[(Kind, Status)],
@@ -73,7 +86,8 @@ pub unsafe fn draw(
     dpi: u32,
     layout: Layout,
     light: bool,
-) -> (i32, i32) {
+    mic_muted: Option<bool>,
+) -> Rendered {
     let s = |v: i32| v * dpi as i32 / 96;
     let fg = if light { 0x000000 } else { 0xFFFFFF };
     let red = if light { 0xC42B1C } else { 0xFF6B6B };
@@ -167,12 +181,21 @@ pub unsafe fn draw(
             if let Some(last) = segs.iter_mut().filter(|s| s.item == sys_item).last() {
                 last.gap_after = 0;
             }
-            if !items.is_empty() {
-                if let Some(last_device) = segs.iter_mut().filter(|s| s.item < sys_item).last() {
-                    last_device.gap_after = s(12);
-                }
+            if !items.is_empty()
+                && let Some(last_device) = segs.iter_mut().filter(|s| s.item < sys_item).last()
+            {
+                last_device.gap_after = s(12);
             }
         }
+    }
+
+    // Microphone: a mic glyph, red and slashed while every active mic is muted. Last segment, so
+    // it sits right next to the clock and gets its own click target (see `mic_rect` below).
+    if let Some(muted) = mic_muted {
+        if let Some(last) = segs.last_mut() {
+            last.gap_after = s(12);
+        }
+        segs.push(seg(MIC_ITEM, MIC_GLYPH, true, if muted { red } else { fg }, 255, 0));
     }
 
     let screen = GetDC(null_mut());
@@ -255,8 +278,44 @@ pub unsafe fn draw(
                 }
                 y += line_h;
             }
+            let mic_segs: Vec<_> = segs.iter_mut().filter(|s| s.item == MIC_ITEM).collect();
+            if !mic_segs.is_empty() {
+                if !items.is_empty() || sys.is_some() {
+                    y += s(8);
+                }
+                let line_w: i32 = mic_segs.iter().map(|s| s.w).sum();
+                let line_h = mic_segs.iter().map(|s| s.h).max().unwrap_or(0);
+                let mut x = (width - line_w) / 2;
+                for seg in mic_segs {
+                    seg.x = x;
+                    seg.y = y + (line_h - seg.h) / 2;
+                    x += seg.w;
+                }
+                y += line_h;
+            }
             (width, y + pad)
         }
+    };
+
+    // Click target: the mic segment, stretched to the full taskbar thickness so a near miss
+    // still toggles the mic instead of opening the panel.
+    let mic_rect = {
+        let mut it = segs.iter().filter(|s| s.item == MIC_ITEM);
+        it.next().map(|first| {
+            let mut box_ = (first.x, first.y, first.x + first.w, first.y + first.h);
+            for seg in it {
+                box_.0 = box_.0.min(seg.x);
+                box_.1 = box_.1.min(seg.y);
+                box_.2 = box_.2.max(seg.x + seg.w);
+                box_.3 = box_.3.max(seg.y + seg.h);
+            }
+            let (x0, x1) = (box_.0 - s(4), box_.2 + s(4));
+            let (y0, y1) = (box_.1 - s(4), box_.3 + s(4));
+            match layout {
+                Layout::Row { height } => (x0, 0, x1 - x0, height),
+                Layout::Column { width } => (0, y0, width, y1 - y0),
+            }
+        })
     };
 
     // White-on-black text into a 32bpp DIB; coverage becomes alpha below.
@@ -276,7 +335,7 @@ pub unsafe fn draw(
         DeleteObject(text_font);
         DeleteObject(icon_font);
         DeleteDC(dc);
-        return (width, height);
+        return Rendered { size: (width, height), mic: mic_rect };
     }
     let old_bmp = SelectObject(dc, bmp);
     SetBkMode(dc, TRANSPARENT as _);
@@ -284,6 +343,17 @@ pub unsafe fn draw(
     for seg in &segs {
         SelectObject(dc, if seg.icon { icon_font } else { text_font });
         TextOutW(dc, seg.x, seg.y, seg.text.as_ptr(), seg.text.len() as i32 - 1);
+    }
+    // Muted: slash the glyph itself, so the state reads at a glance without relying on colour.
+    if mic_muted == Some(true)
+        && let Some(seg) = segs.iter().find(|s| s.item == MIC_ITEM)
+    {
+        let pen = CreatePen(PS_SOLID, s(2).max(1), 0x00FF_FFFF);
+        let old_pen = SelectObject(dc, pen);
+        MoveToEx(dc, seg.x + s(1), seg.y + seg.h - s(1), null_mut());
+        let _ = LineTo(dc, seg.x + seg.w - s(1), seg.y + s(1));
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
     }
     GdiFlush();
 
@@ -322,7 +392,10 @@ pub unsafe fn draw(
     DeleteObject(text_font);
     DeleteObject(icon_font);
     DeleteDC(dc);
-    (width, height)
+    Rendered {
+        size: (width, height),
+        mic: mic_rect,
+    }
 }
 
 unsafe fn font(face: &str, height: i32) -> HFONT {

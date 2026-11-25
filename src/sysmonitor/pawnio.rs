@@ -94,14 +94,14 @@ impl PawnIo {
             return None;
         }
         let mut tjmax = 100;
-        if vendor == 1 {
-            if let Some(v) = Self::exec_raw(handle, "ioctl_read_msr", 0x1A2) {
+        if vendor == 1
+            && let Some(v) = Self::exec_raw(handle, "ioctl_read_msr", 0x1A2)
+        {
                 let t = ((v >> 16) & 0xFF) as i32;
                 if (60..=130).contains(&t) {
                     tjmax = t;
                 }
             }
-        }
         let pio = PawnIo { handle, vendor, tjmax };
         // One reading here is the only chance to say which source answered before the values
         // are deduplicated away by the per-sample log.

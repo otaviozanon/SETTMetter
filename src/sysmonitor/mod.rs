@@ -205,8 +205,9 @@ impl SysMonitor {
                     && hidden_gpu.iter().any(|h| h == &format!("vram{i}"))
             });
 
-        if let Some(pdh) = &mut self.pdh {
-            if pdh.collect() {
+        if let Some(pdh) = &mut self.pdh
+            && pdh.collect()
+        {
                 if pdh.therm.counter != 0 {
                     let max_kelvin = pdh
                         .therm
@@ -232,12 +233,11 @@ impl SysMonitor {
                                 if !name.to_ascii_lowercase().contains(&gpu.luid_str) {
                                     continue;
                                 }
-                                if let Some(pos) = name.find("_eng_") {
-                                    if let Ok(k) = name[pos + 5..].split('_').next().unwrap_or("").parse::<usize>() {
-                                        if k < engines.len() {
-                                            engines[k] += unsafe { item.FmtValue.Anonymous.doubleValue };
-                                        }
-                                    }
+                                if let Some(pos) = name.find("_eng_")
+                                    && let Ok(k) = name[pos + 5..].split('_').next().unwrap_or("").parse::<usize>()
+                                    && k < engines.len()
+                                {
+                                    engines[k] += unsafe { item.FmtValue.Anonymous.doubleValue };
                                 }
                             }
                             g.pct = Some(engines.iter().cloned().fold(0.0, f64::max).min(100.0));
@@ -262,7 +262,6 @@ impl SysMonitor {
                     .collect();
                 }
             }
-        }
         if s.gpus.is_empty() && !self.gpus.is_empty() {
             s.gpus = vec![GpuReading::default(); self.gpus.len()];
         }

@@ -35,6 +35,9 @@ struct Cache {
     gpu_alert_threshold: u32,
     screen: u32,
     widget_offset: i32,
+    mute_vk: Option<u32>,
+    mute_mods: u32,
+    show_mic: bool,
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -52,6 +55,16 @@ fn cache() -> Cache {
             gpu_alert_threshold: read_temp_threshold("GpuAlertThreshold"),
             screen: read_dword(APP_KEY, "Screen").unwrap_or(0),
             widget_offset: read_dword(APP_KEY, "WidgetOffset").map(|v| (v as i32).clamp(-800, 800)).unwrap_or(0),
+            // Break is the default so a fresh install has a working mute key; 0xFFFF means the
+            // user removed the binding.
+            mute_vk: match read_dword(APP_KEY, "MuteVk") {
+                None => Some(0x13),
+                Some(0xFFFF) => None,
+                Some(vk) if vk <= 0xFF => Some(vk),
+                Some(_) => None,
+            },
+            mute_mods: read_dword(APP_KEY, "MuteMods").unwrap_or(0) & 0x0F,
+            show_mic: read_dword(APP_KEY, "ShowMic") != Some(0),
         });
     }
     guard.clone().unwrap()
@@ -59,6 +72,35 @@ fn cache() -> Cache {
 
 fn invalidate_cache() {
     *CACHE.lock().unwrap() = None;
+}
+
+/// The system-wide mic mute shortcut: `(virtual key, modifier mask)`, or `None` when unbound.
+/// Break is the default, matching Discord's own mute keybind.
+pub fn mute_shortcut() -> Option<(u32, u32)> {
+    let cache = cache();
+    cache.mute_vk.map(|vk| (vk, cache.mute_mods))
+}
+
+pub fn set_mute_shortcut(shortcut: Option<(u32, u32)>) {
+    match shortcut {
+        Some((vk, mods)) => {
+            write_dword(APP_KEY, "MuteVk", vk & 0xFF);
+            write_dword(APP_KEY, "MuteMods", mods & 0x0F);
+        }
+        None => write_dword(APP_KEY, "MuteVk", 0xFFFF),
+    }
+    invalidate_cache();
+}
+
+/// Whether the microphone glyph is drawn in the widget. When off, its click shortcuts are gone
+/// with it.
+pub fn show_mic() -> bool {
+    cache().show_mic
+}
+
+pub fn set_show_mic(on: bool) {
+    write_dword(APP_KEY, "ShowMic", u32::from(on));
+    invalidate_cache();
 }
 
 pub fn light_theme() -> bool {

@@ -29,7 +29,7 @@ pub(super) unsafe fn set_tray_icon(show: bool) {
     nid.uID = 1;
     if show {
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        nid.uCallbackMessage = super::WM_APP_MENU;
+        nid.uCallbackMessage = super::WM_APP_SETTINGS;
         nid.hIcon = LoadIconW(GetModuleHandleW(null()), std::ptr::dangling::<u16>()); // resource id 1, see build.rs
         let tip = wide("SETTMetter (all sensors hidden)");
         let len = tip.len().min(nid.szTip.len() - 1);

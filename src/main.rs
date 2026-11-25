@@ -1,17 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The Win32 layer is written as `unsafe extern "system"` procs whose bodies call other unsafe
+// functions; edition 2024 warns on every one of those calls.
+#![allow(unsafe_op_in_unsafe_fn)]
 
 mod areson;
 mod asus;
+mod audio;
 mod bluetooth;
 mod corsair;
 mod corsair_slipstream;
 mod delux;
 mod device;
 mod diag;
+mod flyout;
 mod glorious;
 mod headsetcontrol;
 mod hid_battery;
 mod history;
+mod hotkey;
 mod logitech;
 mod mchose;
 mod mchose_mouse;
@@ -23,6 +29,7 @@ mod render;
 mod settings;
 mod steelseries;
 mod sysmonitor;
+mod ui;
 mod update;
 mod widget;
 mod xbox;
