@@ -2472,7 +2472,9 @@ fn paint_device_card_shapes(
         } else if hov {
             (Some(theme.bg_hover), theme.text_muted)
         } else {
-            (None, theme.border_strong)
+            // An outlined pill on every card competes with the one that is actually the default;
+            // the faintest hairline still reads as a control, without the borders shouting.
+            (None, theme.border)
         };
         canvas.fill_round_rect(rect, r, fill, Some((border, bw)));
     };
@@ -2591,7 +2593,7 @@ fn paint_device_card_shapes(
     let pin_icon_col = if card.pinned {
         theme.text
     } else {
-        theme.text_muted
+        theme.text_sec
     };
     if card.pinned {
         canvas.draw_icon(
@@ -2905,7 +2907,7 @@ fn paint_base_text(
                 fonts.get(FontRole::Sub10_5Reg),
                 &card.subtitle,
                 card.subtitle_rect,
-                theme.text_muted,
+                theme.text_sec,
                 TextAlign::Left,
                 true,
             );
@@ -2928,7 +2930,7 @@ fn paint_base_text(
                 } else if def_hov {
                     theme.text
                 } else {
-                    theme.text_muted
+                    theme.text_sec
                 },
                 TextAlign::Center,
                 false,
@@ -2953,7 +2955,7 @@ fn paint_base_text(
                     } else if com_hov {
                         theme.text
                     } else {
-                        theme.text_muted
+                        theme.text_sec
                     },
                     TextAlign::Center,
                     false,
@@ -3011,7 +3013,7 @@ fn paint_base_text(
                 draw_text(
                     hdc,
                     fonts.get(FontRole::Body11Med),
-                    if card.disabled { "Disabled" } else { "Disable" },
+                    if card.disabled { "Device disabled" } else { "Disable device" },
                     dlab,
                     if card.disabled {
                         theme.text

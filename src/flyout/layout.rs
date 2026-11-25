@@ -865,8 +865,8 @@ fn compute_device_list(
     let chk_gap = px(6.0, s);
     let enh_text_w =
         measure_text_width(hdc, fonts.get(FontRole::Body11Med), "Disable enhancements");
-    let dis_text_w = measure_text_width(hdc, fonts.get(FontRole::Body11Med), "Disabled");
-    let dis_off_w = measure_text_width(hdc, fonts.get(FontRole::Body11Med), "Disable");
+    let dis_text_w = measure_text_width(hdc, fonts.get(FontRole::Body11Med), "Device disabled");
+    let dis_off_w = measure_text_width(hdc, fonts.get(FontRole::Body11Med), "Disable device");
     let pinned_text_w = measure_text_width(hdc, fonts.get(FontRole::Sub10_5Med), "Pinned");
     let listen_chk_text_w =
         measure_text_width(hdc, fonts.get(FontRole::Body11Med), "Listen to this device");

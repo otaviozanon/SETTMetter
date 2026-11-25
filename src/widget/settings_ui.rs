@@ -79,6 +79,7 @@ enum Id {
     Screen(u32),
     Offset,
     OffsetReset,
+    Spacing,
     CpuThreshold,
     GpuThreshold,
     LowBattery,
@@ -1014,6 +1015,17 @@ fn display_page() -> Vec<Row> {
         enabled: offset != 0,
     });
 
+    rows.push(Row::Section("SPACING"));
+    rows.push(Row::Slider {
+        id: Id::Spacing,
+        label: "Gaps between readings".to_string(),
+        value: settings::widget_spacing(),
+        min: settings::SPACING_MIN,
+        max: settings::SPACING_MAX,
+        step: 10,
+        unit: "%",
+    });
+
     rows
 }
 
@@ -1278,6 +1290,10 @@ impl Data {
                     settings::set_widget_offset(value);
                     unsafe { super::place() };
                 }
+                Id::Spacing if settings::widget_spacing() != value => {
+                    settings::set_widget_spacing(value);
+                    unsafe { redraw() };
+                }
                 _ => {}
             }
             self.relayout();
@@ -1353,7 +1369,7 @@ fn activate(data: &mut Data, id: Id) -> bool {
             settings::set_widget_offset(0);
             unsafe { super::place() };
         }
-        Id::Offset | Id::CpuThreshold | Id::GpuThreshold => {}
+        Id::Offset | Id::CpuThreshold | Id::GpuThreshold | Id::Spacing => {}
         Id::LowBattery => settings::set_alerts(!settings::alerts_enabled()),
         Id::Autostart => settings::set_autostart(!settings::autostart_enabled()),
         Id::Refresh => wake(),

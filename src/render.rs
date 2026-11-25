@@ -87,8 +87,11 @@ pub unsafe fn draw(
     layout: Layout,
     light: bool,
     mic_muted: Option<bool>,
+    // Gap multiplier in percent: 100 keeps the default rhythm, lower values pack the widget.
+    spacing: i32,
 ) -> Rendered {
     let s = |v: i32| v * dpi as i32 / 96;
+    let g = |v: i32| (s(v) * spacing / 100).max(1);
     let fg = if light { 0x000000 } else { 0xFFFFFF };
     let red = if light { 0xC42B1C } else { 0xFF6B6B };
     let green = if light { 0x0F7B0F } else { 0x6CCB5F };
@@ -107,7 +110,7 @@ pub unsafe fn draw(
         item,
     };
     for (i, (kind, status)) in items.iter().enumerate() {
-        let gap = if i == items.len() - 1 { 0 } else { s(12) };
+        let gap = if i == items.len() - 1 { 0 } else { g(12) };
         let (label, color, opacity, charging) = match *status {
             Status::Battery { percent, charging, stale } => {
                 let color = if percent <= LOW_BATTERY && !charging { red } else { fg };
@@ -115,9 +118,9 @@ pub unsafe fn draw(
             }
             Status::NotConnected => ("—".to_string(), fg, 110, false),
         };
-        segs.push(seg(i, icon(*kind), true, color, opacity, s(5)));
+        segs.push(seg(i, icon(*kind), true, color, opacity, g(5)));
         if charging {
-            segs.push(seg(i, &label, false, color, opacity, s(2)));
+            segs.push(seg(i, &label, false, color, opacity, g(2)));
             segs.push(seg(i, BOLT, true, green, opacity, gap));
         } else {
             segs.push(seg(i, &label, false, color, opacity, gap));
@@ -170,10 +173,10 @@ pub unsafe fn draw(
             }
             any = true;
             if icon_mask & icon_bit != 0 {
-                segs.push(seg(sys_item, icon_glyph, true, fg, 255, s(4)));
+                segs.push(seg(sys_item, icon_glyph, true, fg, 255, g(4)));
             }
             for (i, (label, color)) in parts.iter().enumerate() {
-                let gap = if i == parts.len() - 1 { s(10) } else { s(6) };
+                let gap = if i == parts.len() - 1 { g(10) } else { g(6) };
                 segs.push(seg(sys_item, label, false, *color, 255, gap));
             }
         }
@@ -184,7 +187,7 @@ pub unsafe fn draw(
             if !items.is_empty()
                 && let Some(last_device) = segs.iter_mut().filter(|s| s.item < sys_item).last()
             {
-                last_device.gap_after = s(12);
+                last_device.gap_after = g(12);
             }
         }
     }
@@ -193,7 +196,7 @@ pub unsafe fn draw(
     // it sits right next to the clock and gets its own click target (see `mic_rect` below).
     if let Some(muted) = mic_muted {
         if let Some(last) = segs.last_mut() {
-            last.gap_after = s(12);
+            last.gap_after = g(12);
         }
         segs.push(seg(MIC_ITEM, MIC_GLYPH, true, if muted { red } else { fg }, 255, 0));
     }
@@ -224,7 +227,7 @@ pub unsafe fn draw(
     }
 
     // Layout.
-    let pad = s(6);
+    let pad = g(6);
     let (width, height) = match layout {
         Layout::Row { height } => {
             let mut x = pad;

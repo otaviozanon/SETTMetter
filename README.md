@@ -31,7 +31,7 @@ CPU temperature also needs the [PawnIO](https://pawnio.eu) driver, a one-time si
 Right-click the widget (or the fallback tray icon) for the settings window:
 
 - **Sensors** — live CPU/RAM/GPU/VRAM/SSD readings next to their checkboxes, per-adapter GPU rows, and the quick presets.
-- **Display** — which group icons are drawn, the refresh rate, which monitor's taskbar hosts the widget, and the manual position offset.
+- **Display** - which group icons are drawn, the refresh rate, which monitor's taskbar hosts the widget, the manual position offset, and how tightly the readings are packed.
 - **Alerts** — low-battery notifications and the CPU/GPU temperature thresholds, as sliders.
 - **Devices** — every detected device with its level; uncheck to hide it from the taskbar.
 - **Audio** — mute, device lock, separate communications device, enhancement/unused-device automation, the mute shortcut, re-enabling all endpoints, restarting the Windows audio service, and a shortcut to the full audio panel.

@@ -642,7 +642,17 @@ unsafe fn redraw() {
             mic: None,
         }
     } else {
-        render::draw(widget, &items, sys.as_ref(), settings::icon_mask(), dpi, layout, light, mic)
+        render::draw(
+            widget,
+            &items,
+            sys.as_ref(),
+            settings::icon_mask(),
+            dpi,
+            layout,
+            light,
+            mic,
+            settings::widget_spacing(),
+        )
     };
     let size = rendered.size;
     with(|a| {

@@ -35,6 +35,7 @@ struct Cache {
     gpu_alert_threshold: u32,
     screen: u32,
     widget_offset: i32,
+    widget_spacing: i32,
     mute_vk: Option<u32>,
     mute_mods: u32,
     show_mic: bool,
@@ -55,6 +56,9 @@ fn cache() -> Cache {
             gpu_alert_threshold: read_temp_threshold("GpuAlertThreshold"),
             screen: read_dword(APP_KEY, "Screen").unwrap_or(0),
             widget_offset: read_dword(APP_KEY, "WidgetOffset").map(|v| (v as i32).clamp(-800, 800)).unwrap_or(0),
+            widget_spacing: read_dword(APP_KEY, "WidgetSpacing")
+                .map(|v| (v as i32).clamp(SPACING_MIN, SPACING_MAX))
+                .unwrap_or(100),
             // Break is the default so a fresh install has a working mute key; 0xFFFF means the
             // user removed the binding.
             mute_vk: match read_dword(APP_KEY, "MuteVk") {
@@ -401,6 +405,20 @@ pub fn widget_offset() -> i32 {
 
 pub fn set_widget_offset(offset: i32) {
     write_dword(APP_KEY, "WidgetOffset", offset.clamp(-800, 800) as u32);
+    invalidate_cache();
+}
+
+/// Gaps between the segments of the taskbar widget, in percent of the default rhythm.
+pub const SPACING_MIN: i32 = 50;
+pub const SPACING_MAX: i32 = 200;
+
+pub fn widget_spacing() -> i32 {
+    cache().widget_spacing
+}
+
+pub fn set_widget_spacing(percent: i32) {
+    let percent = percent.clamp(SPACING_MIN, SPACING_MAX);
+    write_dword(APP_KEY, "WidgetSpacing", percent as u32);
     invalidate_cache();
 }
 
