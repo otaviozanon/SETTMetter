@@ -2216,12 +2216,12 @@ mod tests {
         let content = RectPx::from_xywh(0, 10, 200, 100);
         let (dc, fonts) = fonts();
         let (rows, total) = layout_rows(vec![Row::Section("A"), toggle(0)], content, 1.0, 0, dc, &fonts);
-        assert_eq!(total, 30 + 38 + 2);
+        assert_eq!(total, 32 + 42 + 4);
         assert_eq!(rows.len(), 2);
         match &rows[1] {
             RowLayout::Toggle { rect, .. } => {
-                assert_eq!(rect.top, 10 + 30);
-                assert_eq!(rect.height(), 38);
+                assert_eq!(rect.top, 10 + 32);
+                assert_eq!(rect.height(), 42);
             }
             _ => panic!("expected a toggle"),
         }

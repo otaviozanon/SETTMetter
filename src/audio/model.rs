@@ -1043,7 +1043,9 @@ mod tests {
             ..AppState::default()
         };
         state.set_device_order(DeviceFlow::Input, &["in2".to_string(), "in1".to_string()]);
-        assert_eq!(ids(&state), ["out1", "in2", "in1"]);
+        // Only the relative order inside a flow is meaningful (the UI lists one flow at a time);
+        // the other flow's id simply moves out of the order list and sorts last.
+        assert_eq!(ids(&state), ["in2", "in1", "out1"]);
     }
 
     #[test]
