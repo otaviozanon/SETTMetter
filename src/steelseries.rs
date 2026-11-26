@@ -10,7 +10,9 @@
 //!   percentage, byte 2 the charging flag.
 //! - Arctis Nova 5/5X, protocol from HeadsetControl (https://github.com/Sapd/HeadsetControl):
 //!   command 0xB0, echoed at the start of the reply. Reply byte 1 is 0x02 when the headset is
-//!   off, byte 3 the percentage and byte 4 the charging flag (0x01).
+//!   off, byte 3 the percentage. Byte 4 reads 0x03 ("on battery") on real units even while
+//!   charging, so the charging state comes from the dongle's unsolicited pushes on interface 5
+//!   (`bb 01` charging, `bb 02` plugged but not charging, `bb 03` on battery) when one arrives.
 
 use crate::device::{Kind, Observation, State};
 use crate::diag;
@@ -75,6 +77,10 @@ struct Device {
     name: &'static str,
     protocol: Protocol,
     seen: bool,
+    /// Arctis Nova: the dongle pushes status changes on this second collection.
+    pushes: Option<HidDevice>,
+    /// Arctis Nova: charging state from the pushes, which the polled reply gets wrong.
+    charging: Option<bool>,
 }
 
 #[derive(Default)]
@@ -108,18 +114,26 @@ impl SteelSeries {
                 self.skip.push(path.clone());
                 continue;
             }
-            self.open.insert(path.clone(), Device { dev, pid, name, protocol, seen: false });
+            self.open.insert(
+                path.clone(),
+                Device { dev, pid, name, protocol, seen: false, pushes: open_pushes(api, pid, protocol), charging: None },
+            );
         }
 
         let mut by_name: HashMap<&'static str, (State, Kind)> = HashMap::new();
         let mut broken = Vec::new();
         for (path, m) in self.open.iter_mut() {
             let key = format!("steelseries:{:04x}", m.pid);
-            let state = match query(&m.dev, m.protocol, &key) {
+            if let Some(pushes) = &m.pushes
+                && let Err(e) = drain(pushes, &key, &mut m.charging)
+            {
+                diag::event(&key, format!("push i/o failed: {e}"));
+            }
+            let state = match query(&m.dev, m.protocol, &key, &mut m.charging) {
                 Ok(Some((percent, charging))) => {
                     m.seen = true;
                     diag::event(&key, "battery reply");
-                    State::Battery { percent, charging }
+                    State::Battery { percent, charging: m.charging.unwrap_or(charging) }
                 }
                 Ok(None) => {
                     diag::event(&key, "no battery reply (off or asleep)");
@@ -153,9 +167,60 @@ fn slug(name: &str) -> String {
     name.to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().join("-")
 }
 
-fn query(dev: &HidDevice, protocol: Protocol, key: &str) -> hidapi::HidResult<Option<(u8, bool)>> {
+/// The Arctis Nova dongle also exposes a collection on interface 5, where it pushes status
+/// changes (`b7` level, `b9` on/off, `bb` charging) without being asked.
+fn open_pushes(api: &HidApi, pid: u16, protocol: Protocol) -> Option<HidDevice> {
+    if protocol != Protocol::Nova {
+        return None;
+    }
+    api.device_list()
+        .find(|d| d.vendor_id() == VID && d.product_id() == pid && d.interface_number() == 5)
+        .and_then(|d| api.open_path(d.path()).ok())
+}
+
+/// Reads what the dongle pushed, keeping the charging state (and logging the frame).
+fn drain(dev: &HidDevice, key: &str, charging: &mut Option<bool>) -> hidapi::HidResult<()> {
     let mut buf = [0u8; 64];
-    while dev.read_timeout(&mut buf, 0)? > 0 {} // stale reports
+    loop {
+        let n = dev.read_timeout(&mut buf, 0)?;
+        if n == 0 {
+            return Ok(());
+        }
+        let r = &buf[..n];
+        if let Some(c) = pushed_charging(r) {
+            *charging = Some(c);
+        }
+        log_push(r, key);
+    }
+}
+
+/// A charging push: `bb 01` charging, `bb 03` on battery (`02` plugged but not charging).
+fn pushed_charging(r: &[u8]) -> Option<bool> {
+    match (r.first(), r.get(1)) {
+        (Some(0xBB), Some(&value)) => Some(value == 0x01),
+        _ => None,
+    }
+}
+
+fn log_push(r: &[u8], key: &str) {
+    let raw: Vec<String> = r.iter().take(6).map(|x| format!("{x:02x}")).collect();
+    diag::event(&format!("{key}:push"), format!("frame {}", raw.join(" ")));
+}
+
+fn query(dev: &HidDevice, protocol: Protocol, key: &str, charging: &mut Option<bool>) -> hidapi::HidResult<Option<(u8, bool)>> {
+    let mut buf = [0u8; 64];
+    loop {
+        let n = dev.read_timeout(&mut buf, 0)?;
+        if n == 0 {
+            break;
+        }
+        if protocol == Protocol::Nova {
+            if let Some(c) = pushed_charging(&buf[..n]) {
+                *charging = Some(c);
+            }
+            log_push(&buf[..n], key);
+        }
+    }
     match protocol {
         Protocol::Aerox { wireless } => dev.write(&[0x00, if wireless { 0xD2 } else { 0x92 }])?,
         Protocol::Rival => dev.write(&[0x00, 0xAA, 0x01])?,
@@ -171,7 +236,11 @@ fn query(dev: &HidDevice, protocol: Protocol, key: &str) -> hidapi::HidResult<Op
         }
         let r = &buf[..n];
         if protocol == Protocol::Nova {
+            if let Some(c) = pushed_charging(r) {
+                *charging = Some(c);
+            }
             if r.first() != Some(&0xB0) {
+                log_push(r, key);
                 continue; // other status reports (chatmix) arrive on the same collection
             }
             if r.get(1) == Some(&0x02) {
@@ -180,9 +249,8 @@ fn query(dev: &HidDevice, protocol: Protocol, key: &str) -> hidapi::HidResult<Op
         }
         if let Some(b) = parse(r, protocol) {
             if protocol == Protocol::Nova {
-                // Charging is the byte that keeps going wrong on real units, so keep the frame.
                 let raw: Vec<String> = r.iter().take(8).map(|x| format!("{x:02x}")).collect();
-                diag::event(key, format!("battery {}% charging={} (frame {})", b.0, b.1, raw.join(" ")));
+                diag::event(&format!("{key}:frame"), format!("battery {}% charging={} (frame {})", b.0, b.1, raw.join(" ")));
             }
             return Ok(Some(b));
         }
@@ -241,6 +309,15 @@ mod tests {
         assert_eq!(parse(&[0xB0, 0x02, 0x00, 90, 0x00], Protocol::Nova), None); // headset off
         assert_eq!(parse(&[0xB0, 0x03, 0x00, 101, 0x00], Protocol::Nova), None);
         assert_eq!(parse(&[0xB0, 0x03], Protocol::Nova), None);
+    }
+
+    #[test]
+    fn reads_charging_pushes() {
+        assert_eq!(pushed_charging(&[0xBB, 0x01, 0x02]), Some(true));
+        assert_eq!(pushed_charging(&[0xBB, 0x02, 0x02]), Some(false)); // plugged, not charging
+        assert_eq!(pushed_charging(&[0xBB, 0x03, 0x02]), Some(false)); // on battery
+        assert_eq!(pushed_charging(&[0xB7, 0x2F]), None); // battery level push
+        assert_eq!(pushed_charging(&[0xBB]), None);
     }
 
     #[test]
