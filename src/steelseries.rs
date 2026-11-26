@@ -1,4 +1,4 @@
-//! SteelSeries wireless mice, over their 2.4 GHz dongle or a cable.
+//! SteelSeries wireless mice and headsets, over their 2.4 GHz dongle or a cable.
 //!
 //! Protocol from rivalcfg (https://github.com/flozz/rivalcfg). Commands are output reports
 //! (report id 0) on a vendor collection; the reply is the next input report.
@@ -8,6 +8,9 @@
 //!   of 1-21 in 5% steps.
 //! - Rival 3 Wireless (Gen 2) and Rival 650 Wireless: command `AA 01`. Reply byte 0 is the
 //!   percentage, byte 2 the charging flag.
+//! - Arctis Nova 5/5X, protocol from HeadsetControl (https://github.com/Sapd/HeadsetControl):
+//!   command 0xB0, echoed at the start of the reply. Reply byte 1 is 0x02 when the headset is
+//!   off, byte 3 the percentage and byte 4 the charging flag (0x01).
 
 use crate::device::{Kind, Observation, State};
 use crate::diag;
@@ -25,6 +28,16 @@ enum Protocol {
     /// Aerox / Prime, cable or dongle.
     Aerox { wireless: bool },
     Rival,
+    Nova,
+}
+
+impl Protocol {
+    fn kind(self) -> Kind {
+        match self {
+            Protocol::Nova => Kind::Headset,
+            _ => Kind::Mouse,
+        }
+    }
 }
 
 /// (USB product id, name, interface, protocol). The dongle and the cable share a name, so
@@ -52,9 +65,11 @@ const MODELS: &[(u16, &str, i32, Protocol)] = &[
     (0x1872, "SteelSeries Rival 3 Wireless Gen 2", 3, Protocol::Rival),
     (0x1726, "SteelSeries Rival 650 Wireless", 0, Protocol::Rival),
     (0x172B, "SteelSeries Rival 650 Wireless", 0, Protocol::Rival),
+    (0x2232, "SteelSeries Arctis Nova 5", 3, Protocol::Nova),
+    (0x2253, "SteelSeries Arctis Nova 5X", 3, Protocol::Nova),
 ];
 
-struct Mouse {
+struct Device {
     dev: HidDevice,
     pid: u16,
     name: &'static str,
@@ -64,7 +79,7 @@ struct Mouse {
 
 #[derive(Default)]
 pub struct SteelSeries {
-    open: HashMap<CString, Mouse>,
+    open: HashMap<CString, Device>,
     /// Collections already checked and found without output reports.
     skip: Vec<CString>,
 }
@@ -93,10 +108,10 @@ impl SteelSeries {
                 self.skip.push(path.clone());
                 continue;
             }
-            self.open.insert(path.clone(), Mouse { dev, pid, name, protocol, seen: false });
+            self.open.insert(path.clone(), Device { dev, pid, name, protocol, seen: false });
         }
 
-        let mut by_name: HashMap<&'static str, State> = HashMap::new();
+        let mut by_name: HashMap<&'static str, (State, Kind)> = HashMap::new();
         let mut broken = Vec::new();
         for (path, m) in self.open.iter_mut() {
             let key = format!("steelseries:{:04x}", m.pid);
@@ -107,7 +122,7 @@ impl SteelSeries {
                     State::Battery { percent, charging }
                 }
                 Ok(None) => {
-                    diag::event(&key, "no battery reply (mouse off or asleep)");
+                    diag::event(&key, "no battery reply (off or asleep)");
                     if !m.seen {
                         continue;
                     }
@@ -119,9 +134,9 @@ impl SteelSeries {
                     continue;
                 }
             };
-            let slot = by_name.entry(m.name).or_insert(state);
-            if !matches!(slot, State::Battery { .. }) {
-                *slot = state;
+            let slot = by_name.entry(m.name).or_insert((state, m.protocol.kind()));
+            if !matches!(slot.0, State::Battery { .. }) {
+                slot.0 = state;
             }
         }
         for path in broken {
@@ -129,7 +144,7 @@ impl SteelSeries {
         }
         by_name
             .into_iter()
-            .map(|(name, state)| Observation { id: format!("steelseries:{}", slug(name)), name: Some(name.into()), kind: Some(Kind::Mouse), state })
+            .map(|(name, (state, kind))| Observation { id: format!("steelseries:{}", slug(name)), name: Some(name.into()), kind: Some(kind), state })
             .collect()
     }
 }
@@ -144,15 +159,27 @@ fn query(dev: &HidDevice, protocol: Protocol) -> hidapi::HidResult<Option<(u8, b
     match protocol {
         Protocol::Aerox { wireless } => dev.write(&[0x00, if wireless { 0xD2 } else { 0x92 }])?,
         Protocol::Rival => dev.write(&[0x00, 0xAA, 0x01])?,
+        Protocol::Nova => dev.write(&[0x00, 0xB0])?,
     };
-    let deadline = Instant::now() + WAIT;
+    // The headset status can take longer to come back through the dongle.
+    let wait = if protocol == Protocol::Nova { Duration::from_secs(1) } else { WAIT };
+    let deadline = Instant::now() + wait;
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         let n = dev.read_timeout(&mut buf, left.as_millis() as i32)?;
         if n == 0 {
             break;
         }
-        if let Some(r) = parse(&buf[..n], protocol) {
-            return Ok(Some(r));
+        let r = &buf[..n];
+        if protocol == Protocol::Nova {
+            if r.first() != Some(&0xB0) {
+                continue; // other status reports (chatmix) arrive on the same collection
+            }
+            if r.get(1) == Some(&0x02) {
+                return Ok(None); // headset off
+            }
+        }
+        if let Some(b) = parse(r, protocol) {
+            return Ok(Some(b));
         }
     }
     Ok(None)
@@ -171,6 +198,13 @@ fn parse(r: &[u8], protocol: Protocol) -> Option<(u8, bool)> {
         Protocol::Rival => {
             let (percent, charging) = (*r.first()?, *r.get(2)?);
             (percent <= 100).then_some((percent, charging != 0))
+        }
+        Protocol::Nova => {
+            if *r.get(1)? == 0x02 {
+                return None; // headset off
+            }
+            let percent = *r.get(3)?;
+            (percent <= 100).then(|| (percent, r.get(4) == Some(&0x01)))
         }
     }
 }
@@ -193,6 +227,15 @@ mod tests {
         assert_eq!(parse(&[73, 0, 1], Protocol::Rival), Some((73, true)));
         assert_eq!(parse(&[73, 0, 0], Protocol::Rival), Some((73, false)));
         assert_eq!(parse(&[0xFF, 0, 0], Protocol::Rival), None);
+    }
+
+    #[test]
+    fn parses_nova() {
+        assert_eq!(parse(&[0xB0, 0x03, 0x00, 87, 0x00], Protocol::Nova), Some((87, false)));
+        assert_eq!(parse(&[0xB0, 0x03, 0x00, 42, 0x01], Protocol::Nova), Some((42, true)));
+        assert_eq!(parse(&[0xB0, 0x02, 0x00, 90, 0x00], Protocol::Nova), None); // headset off
+        assert_eq!(parse(&[0xB0, 0x03, 0x00, 101, 0x00], Protocol::Nova), None);
+        assert_eq!(parse(&[0xB0, 0x03], Protocol::Nova), None);
     }
 
     #[test]
