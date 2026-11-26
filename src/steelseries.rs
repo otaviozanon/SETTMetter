@@ -115,7 +115,7 @@ impl SteelSeries {
         let mut broken = Vec::new();
         for (path, m) in self.open.iter_mut() {
             let key = format!("steelseries:{:04x}", m.pid);
-            let state = match query(&m.dev, m.protocol) {
+            let state = match query(&m.dev, m.protocol, &key) {
                 Ok(Some((percent, charging))) => {
                     m.seen = true;
                     diag::event(&key, "battery reply");
@@ -153,7 +153,7 @@ fn slug(name: &str) -> String {
     name.to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().join("-")
 }
 
-fn query(dev: &HidDevice, protocol: Protocol) -> hidapi::HidResult<Option<(u8, bool)>> {
+fn query(dev: &HidDevice, protocol: Protocol, key: &str) -> hidapi::HidResult<Option<(u8, bool)>> {
     let mut buf = [0u8; 64];
     while dev.read_timeout(&mut buf, 0)? > 0 {} // stale reports
     match protocol {
@@ -179,6 +179,11 @@ fn query(dev: &HidDevice, protocol: Protocol) -> hidapi::HidResult<Option<(u8, b
             }
         }
         if let Some(b) = parse(r, protocol) {
+            if protocol == Protocol::Nova {
+                // Charging is the byte that keeps going wrong on real units, so keep the frame.
+                let raw: Vec<String> = r.iter().take(8).map(|x| format!("{x:02x}")).collect();
+                diag::event(key, format!("battery {}% charging={} (frame {})", b.0, b.1, raw.join(" ")));
+            }
             return Ok(Some(b));
         }
     }
