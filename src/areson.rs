@@ -13,6 +13,8 @@
 
 use crate::device::{Kind, Observation, State};
 use crate::diag;
+use crate::hidutil::checksum55 as checksum;
+use crate::hidutil::drain as flush;
 use hidapi::{HidApi, HidDevice};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -30,7 +32,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Receiver/wired product ids and whether the level is a whole percentage (FA7B/FA7C) or tenths
 /// (FA07/FA08).
-const PIDS: &[(u16, bool)] = &[(0xFA7B, true), (0xFA7C, true), (0xFA07, false), (0xFA08, false)];
+const PIDS: &[(u16, bool)] = &[(0xFA7B, true), (0xFA7C, true), (0xFA7E, true), (0xFA07, false), (0xFA08, false)];
 
 struct Receiver {
     request: HidDevice,
@@ -150,15 +152,6 @@ fn query(request: &HidDevice, reply: &HidDevice) -> hidapi::HidResult<Option<(u8
     }
 }
 
-fn flush(reply: &HidDevice) {
-    let mut buf = [0u8; LEN];
-    while let Ok(n) = reply.read_timeout(&mut buf, 0) {
-        if n == 0 {
-            break;
-        }
-    }
-}
-
 /// A valid reply: report 0x09, command 0x04 and the 0x55 checksum. Byte 6 is the level, byte 7
 /// the charging flag.
 fn parse(raw: &[u8]) -> Option<(u8, bool)> {
@@ -166,11 +159,6 @@ fn parse(raw: &[u8]) -> Option<(u8, bool)> {
         return None;
     }
     Some((raw[6], raw[7] != 0))
-}
-
-/// The receiver's frames sum to 0x55 (mod 256).
-fn checksum(frame: &[u8]) -> u8 {
-    0x55u8.wrapping_sub(frame.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)))
 }
 
 /// Percentage from the reply's level byte, or None when there is no usable reading yet. A

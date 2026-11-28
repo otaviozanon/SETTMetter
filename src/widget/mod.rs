@@ -12,7 +12,20 @@ mod tray;
 
 use crate::device::{Reading, Status, Tracker};
 use crate::flyout;
-use crate::{areson, asus, bluetooth, corsair, corsair_slipstream, delux, device, diag, glorious, headsetcontrol, hid_battery, history, init_com, logitech, mchose, mchose_mouse, notify, playstation, razer, render, settings, steelseries, sysmonitor, update, wide, xbox};
+use crate::{
+    airpods, airoha, akko, alienware, arbiter, armorx, areson, astro, asus, asus_rog, atk_bitmouse, atk_mercury, atk_serial,
+    aula_headset, aula_keyboard, aula_mouse, barracuda_pro,
+    bluetooth, cherry, chimera, coolermaster, corsair, corsair_compx, corsair_slipstream, crociris, dareu, darkrim,
+    darmoshark, delux, device, diag, eightbitdo, endgame, evision, eweadn, fastpair, finalmouse, fractal, galaxy_buds,
+    gamepads, gamesir_ble, gamesir_sapjoy, glorious, hyperx, jabra, jbl, jbl_speaker,
+    headsetcontrol, hid_battery, history, init_com, keychron, kysona, lamzu, logitech, logitech_g435,
+    logitech_g435_jieli, logitech_g735, machenike, maono, marshall, mchose, mchose_extra, mchose_keyboard, mchose_mouse, misc_mice, misc_mice_extra, moondrop, msi, niceboy, ninjutso,
+    nothing_ear, notify, nuphy, nuphy_halo96, nzxt, phonelink, piao, plantronics, playstation, playstation_link, pressplay, pulsar, raigor, rapoo, rawm, razer,
+    razer_headset, render, roccat, royal_kludge, royuan, scyrox, semico, settings, sinowealth, sonix, sony_headphones, sony_inzone, sony_inzone_serial, soundcore, sprime,
+    steelseries, steelseries_elite, steelseries_headset, steam_controller, switch_pro, sysmonitor, turtlebeach,
+    update, vaxee, vgn, vgn_client, via_dongle, wide, wobkey, xbox, zebronics, zenith,
+    zowie,
+};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
@@ -48,6 +61,9 @@ const CLOCK_RESERVE: i32 = 88;
 /// a process, so poll those less often.
 const POLL_LOGITECH: Duration = Duration::from_secs(15);
 const POLL_BLUETOOTH: Duration = Duration::from_secs(60);
+/// COM ports, SetupAPI enumeration and RFCOMM/BLE reads can block for seconds; they do not
+/// need the 15 s device poll.
+const POLL_SLOW: Duration = Duration::from_secs(60);
 
 static READINGS: Mutex<Option<Vec<Reading>>> = Mutex::new(None);
 static SYS_SNAPSHOT: Mutex<Option<crate::sysmonitor::Snapshot>> = Mutex::new(None);
@@ -191,6 +207,7 @@ fn demo_readings() -> Vec<Reading> {
         name: name.into(),
         kind,
         status: Status::Battery { percent, charging, stale },
+        missed: 0,
     };
     vec![
         r("Headset", Kind::Headset, 64, true, false),
@@ -215,41 +232,235 @@ fn worker(controller: usize, rx: Receiver<()>) {
         }
     };
     let mut logi = logitech::Logitech::new();
+    let mut logi_g435 = logitech_g435::LogitechG435::default();
+    let mut logi_g435_jieli = logitech_g435_jieli::G435Jieli::default();
+    let mut logi_g735 = logitech_g735::LogitechG735::default();
     let mut delux = delux::Delux::default();
     let mut areson = areson::Areson::default();
     let mut asus = asus::Asus::default();
+    let mut asus_rog = asus_rog::AsusRog::default();
+    let mut arbiter = arbiter::Arbiter::default();
+    let mut lamzu = lamzu::Lamzu::default();
+    let mut endgame = endgame::Endgame::default();
+    let mut vaxee = vaxee::Vaxee::default();
+    let mut scyrox = scyrox::Scyrox::default();
+    let mut ninjutso = ninjutso::Ninjutso;
+    let mut sprime = sprime::Sprime;
+    let mut finalmouse = finalmouse::Finalmouse::default();
+    let mut pulsar = pulsar::Pulsar::default();
+    let mut atk_bitmouse = atk_bitmouse::AtkBitmouse::default();
+    let mut msi = msi::Msi::default();
+    let mut misc_mice = misc_mice::MiscMice::default();
+    let mut misc_mice_extra = misc_mice_extra::MiscMiceExtra::default();
+    let mut fantech_extra = misc_mice_extra::FantechExtra::default();
+    let mut armorx = armorx::Armorx::default();
+    let mut atk_serial = atk_serial::AtkSerial;
+    let mut nuphy_halo96 = nuphy_halo96::NuphyHalo96::default();
+    let mut coolermaster = coolermaster::CoolerMaster::default();
+    let mut zowie = zowie::Zowie::default();
+    let mut evision = evision::Evision::default();
+    let mut eweadn = eweadn::Eweadn::default();
+    let mut royal_kludge = royal_kludge::RoyalKludge::default();
+    let mut sonix = sonix::Sonix;
+    let mut royuan = royuan::Royuan::default();
+    let mut dareu = dareu::Dareu;
+    let mut keychron = keychron::Keychron;
+    let mut cherry = cherry::Cherry;
+    let mut wobkey = wobkey::Wobkey::default();
+    let mut nuphy = nuphy::Nuphy::default();
+    let mut via_dongle = via_dongle::ViaDongle::default();
     let mut glorious = glorious::Glorious::default();
+    let mut akko = akko::Akko::default();
+    let mut chimera = chimera::Chimera::default();
+    let mut darmoshark = darmoshark::Darmoshark::default();
+    let mut fractal = fractal::Fractal::default();
+    let mut gamepads = gamepads::Gamepads::default();
+    let mut gamesir_sapjoy = gamesir_sapjoy::GameSirSapjoy::default();
+    let mut gamesir_ble = gamesir_ble::GameSirBle::default();
+    let mut rapoo = rapoo::Rapoo::default();
+    let mut vgn_client = vgn_client::VgnClient::default();
+    let mut jabra = jabra::Jabra;
+    let mut jbl = jbl::Jbl;
+    let mut moondrop = moondrop::Moondrop;
+    let mut eightbitdo = eightbitdo::EightBitDo::default();
+    let mut machenike = machenike::Machenike::default();
+    let mut niceboy = niceboy::Niceboy::default();
+    let mut piao = piao::Piao::default();
+    let mut raigor = raigor::Raigor::default();
+    let mut rawm = rawm::Rawm::default();
+    let mut semico = semico::Semico::default();
+    let mut sinowealth = sinowealth::Sinowealth::default();
+    let mut vgn = vgn::Vgn::default();
+    let mut zebronics = zebronics::Zebronics::default();
+    let mut zenith = zenith::Zenith::default();
+    let mut kysona = kysona::Kysona::default();
+    let mut airoha = airoha::Airoha::default();
+    let mut hyperx = hyperx::Hyperx::default();
+    let mut roccat = roccat::Roccat::default();
+    let mut astro = astro::Astro::default();
+    let mut nzxt = nzxt::Nzxt::default();
+    let mut plantronics = plantronics::Plantronics::default();
+    let mut alienware = alienware::Alienware::default();
+    let mut maono = maono::Maono::default();
+    let mut crociris = crociris::Crociris::default();
+    let mut darkrim = darkrim::Darkrim::default();
+    let mut aula_headset = aula_headset::AulaHeadset::default();
+    let mut aula_keyboard = aula_keyboard::AulaKeyboard::default();
+    let mut aula_mouse = aula_mouse::AulaMouse::default();
+    let mut pressplay = pressplay::Pressplay::default();
+    let mut turtlebeach = turtlebeach::Turtlebeach::default();
+    let mut sony_inzone = sony_inzone::SonyInzone::default();
+    let mut sony_inzone_serial = sony_inzone_serial::SonyInzoneSerial::default();
+    let mut playstation_link = playstation_link::PlayStationLink::default();
     let mut mchose = mchose::Mchose::default();
+    let mut mchose_extra = mchose_extra::MchoseExtra::default();
+    let mut mchose_keyboard = mchose_keyboard::MchoseKeyboard::default();
+    let mut atk_mercury = atk_mercury::AtkMercury::default();
     let mut mchose_mice = mchose_mouse::MchoseMice::default();
     let mut corsair = corsair::Corsair::default();
+    let mut corsair_compx = corsair_compx::CorsairCompx::default();
     let mut corsair_slipstream = corsair_slipstream::CorsairSlipstream::default();
     let mut hid_battery = hid_battery::HidBattery::default();
+    let mut razer_headset = razer_headset::RazerHeadset::default();
+    let mut barracuda_pro = barracuda_pro::BarracudaPro::default();
     let mut razer = razer::Razer::default();
+    let mut steelseries_elite = steelseries_elite::SteelSeriesElite::default();
+    let mut steelseries_headset = steelseries_headset::SteelSeriesHeadset::default();
     let mut steelseries = steelseries::SteelSeries::default();
+    let mut steam_controller = steam_controller::SteamController::default();
+    let mut switch_pro = switch_pro::SwitchPro::default();
     let mut tracker = Tracker::default();
     let mut alerts = notify::LowBatteryAlerts::default();
+    let mut airpods = airpods::AirPods;
+    let mut galaxy_buds = galaxy_buds::GalaxyBuds;
+    let mut nothing_ear = nothing_ear::NothingEar;
+    let mut fastpair = fastpair::FastPair;
+    let mut marshall = marshall::Marshall;
+    let mut jbl_speaker = jbl_speaker::JblSpeaker;
+    let mut phonelink = phonelink::PhoneLink;
+    let mut soundcore = soundcore::Soundcore;
+    let mut sony_headphones = sony_headphones::SonyHeadphones;
     let mut bt = Vec::new();
     let mut last_bt: Option<Instant> = None;
+    let mut last_slow: Option<Instant> = None;
     let mut forced = true;
 
     loop {
         let _ = api.refresh_devices();
-        let mut obs = logi.scan(&api);
+        let mut obs = logi_g435.scan(&api);
+        obs.extend(logi_g735.scan(&api));
+        obs.extend(logi.scan(&api));
         obs.extend(playstation::scan(&api));
         obs.extend(delux.scan(&api));
         obs.extend(areson.scan(&api));
         obs.extend(asus.scan(&api));
+        obs.extend(asus_rog.scan(&api));
+        obs.extend(arbiter.scan(&api));
+        obs.extend(lamzu.scan(&api));
+        obs.extend(endgame.scan(&api));
+        obs.extend(vaxee.scan(&api));
+        obs.extend(scyrox.scan(&api));
+        obs.extend(ninjutso.scan(&api));
+        obs.extend(sprime.scan(&api));
+        obs.extend(finalmouse.scan(&api));
+        obs.extend(pulsar.scan(&api));
+        obs.extend(atk_bitmouse.scan(&api));
+        obs.extend(msi.scan(&api));
+        obs.extend(misc_mice.scan(&api));
+        obs.extend(coolermaster.scan(&api));
+        obs.extend(zowie.scan(&api));
+        obs.extend(evision.scan(&api));
+        obs.extend(eweadn.scan(&api));
+        obs.extend(royal_kludge.scan(&api));
+        obs.extend(sonix.scan(&api));
+        obs.extend(royuan.scan(&api));
+        obs.extend(dareu.scan(&api));
+        obs.extend(keychron.scan(&api));
+        obs.extend(cherry.scan(&api));
+        obs.extend(wobkey.scan(&api));
+        obs.extend(nuphy.scan(&api));
+        obs.extend(via_dongle.scan(&api));
         obs.extend(glorious.scan(&api));
+        obs.extend(akko.scan(&api));
+        obs.extend(chimera.scan(&api));
+        obs.extend(darmoshark.scan(&api));
+        obs.extend(fractal.scan(&api));
+        obs.extend(gamepads.scan(&api));
+        obs.extend(gamesir_sapjoy.scan(&api));
+        obs.extend(eightbitdo.scan(&api));
+        obs.extend(machenike.scan(&api));
+        obs.extend(niceboy.scan(&api));
+        obs.extend(piao.scan(&api));
+        obs.extend(raigor.scan(&api));
+        obs.extend(rawm.scan(&api));
+        obs.extend(semico.scan(&api));
+        obs.extend(sinowealth.scan(&api));
+        obs.extend(vgn.scan(&api));
+        obs.extend(zebronics.scan(&api));
+        obs.extend(zenith.scan(&api));
+        obs.extend(kysona.scan(&api));
+        obs.extend(airoha.scan(&api));
+        obs.extend(hyperx.scan(&api));
+        obs.extend(roccat.scan(&api));
+        obs.extend(astro.scan(&api));
+        obs.extend(nzxt.scan(&api));
+        obs.extend(plantronics.scan(&api));
+        obs.extend(alienware.scan(&api));
+        obs.extend(maono.scan(&api));
+        obs.extend(crociris.scan(&api));
+        obs.extend(darkrim.scan(&api));
+        obs.extend(aula_headset.scan(&api));
+        obs.extend(aula_keyboard.scan(&api));
+        obs.extend(aula_mouse.scan(&api));
+        obs.extend(pressplay.scan(&api));
+        obs.extend(turtlebeach.scan(&api));
+        obs.extend(sony_inzone.scan(&api));
+        obs.extend(playstation_link.scan(&api));
         obs.extend(mchose.scan(&api));
+        obs.extend(mchose_extra.scan(&api));
+        obs.extend(mchose_keyboard.scan(&api));
+        obs.extend(atk_mercury.scan(&api));
         obs.extend(mchose_mice.scan(&api));
         obs.extend(corsair.scan(&api));
+        obs.extend(corsair_compx.scan(&api));
         obs.extend(razer.scan(&api));
+        obs.extend(steelseries_elite.scan(&api));
+        obs.extend(steelseries_headset.scan(&api));
         obs.extend(steelseries.scan(&api));
+        obs.extend(steam_controller.scan(&api));
+        obs.extend(switch_pro.scan(&api));
         obs.extend(corsair_slipstream.scan(&api));
+        obs.extend(razer_headset.scan(&api));
+        obs.extend(barracuda_pro.scan(&api));
         obs.extend(hid_battery.scan(&api));
         obs.extend(xbox::scan());
+        if forced || last_slow.is_none_or(|t| t.elapsed() >= POLL_SLOW) {
+            obs.extend(logi_g435_jieli.scan(&api));
+            obs.extend(misc_mice_extra.scan(&api));
+            obs.extend(fantech_extra.scan(&api));
+            obs.extend(armorx.scan(&api));
+            obs.extend(atk_serial.scan(&api));
+            obs.extend(nuphy_halo96.scan(&api));
+            obs.extend(gamesir_ble.scan(&api));
+            obs.extend(rapoo.scan(&api));
+            obs.extend(vgn_client.scan(&api));
+            obs.extend(jabra.scan(&api));
+            obs.extend(jbl.scan(&api));
+            obs.extend(moondrop.scan(&api));
+            obs.extend(sony_inzone_serial.scan(&api));
+            last_slow = Some(Instant::now());
+        }
         if forced || last_bt.is_none_or(|t| t.elapsed() >= POLL_BLUETOOTH) {
             bt = bluetooth::scan();
+            bt.extend(airpods.scan());
+            bt.extend(galaxy_buds.scan());
+            bt.extend(nothing_ear.scan());
+            bt.extend(fastpair.scan());
+            bt.extend(jbl_speaker.scan());
+            bt.extend(marshall.scan());
+            bt.extend(phonelink.scan());
+            bt.extend(soundcore.scan());
+            bt.extend(sony_headphones.scan());
             if let Some(exe) = headsetcontrol::find() {
                 bt.extend(headsetcontrol::scan(&exe, |pid| device::read_natively(&obs, pid)));
             }

@@ -38,7 +38,14 @@ pub fn read_natively(observations: &[Observation], pid: u16) -> bool {
     let pid = format!("{pid:04x}");
     observations.iter().any(|o| {
         let mut parts = o.id.split(':');
-        matches!(parts.next(), Some("logi" | "mchose" | "corsair")) && parts.next() == Some(pid.as_str())
+        matches!(
+            parts.next(),
+            Some(
+                "logi" | "mchose" | "corsair" | "airoha" | "astro" | "hyperx" | "plantronics" | "razer"
+                    | "roccat" | "nzxt" | "alienware" | "maono" | "crociris" | "darkrim" | "pressplay"
+                    | "steelseries" | "inzone" | "pslink" | "jbl" | "jabra" | "moondrop" | "turtlebeach"
+            )
+        ) && parts.next() == Some(pid.as_str())
     })
 }
 
@@ -93,7 +100,14 @@ pub struct Reading {
     pub name: String,
     pub kind: Kind,
     pub status: Status,
+    /// Consecutive scans the source did not report it. A wireless device that is asleep or
+    /// briefly out of range keeps its last reading dimmed until `GRACE_SCANS` is reached.
+    pub(crate) missed: u8,
 }
+
+/// 8 scans at the 15 s poll interval: a sleeping mouse, or a device polled on the 60 s slow
+/// schedule, does not flicker as disconnected.
+const GRACE_SCANS: u8 = 8;
 
 /// Remembers every device seen this session, so a device that disappears shows as
 /// "not connected" and a sleeping one keeps its last battery reading.
@@ -120,6 +134,7 @@ impl Tracker {
                 Some(p) => {
                     let r = &mut self.known[p];
                     r.status = status;
+                    r.missed = 0;
                     if let Some(name) = o.name {
                         r.name = name;
                     }
@@ -130,13 +145,19 @@ impl Tracker {
                 None => {
                     let Some(name) = o.name else { continue };
                     let kind = o.kind.unwrap_or_else(|| Kind::from_name(&name));
-                    self.known.push(Reading { id: o.id, name, kind, status });
+                    self.known.push(Reading { id: o.id, name, kind, status, missed: 0 });
                 }
             }
         }
         for r in &mut self.known {
-            if !seen.contains(&r.id) {
+            if seen.contains(&r.id) || r.status == Status::NotConnected {
+                continue;
+            }
+            r.missed = r.missed.saturating_add(1);
+            if r.missed >= GRACE_SCANS {
                 r.status = Status::NotConnected;
+            } else if let Status::Battery { stale, .. } = &mut r.status {
+                *stale = true;
             }
         }
         // A device that changed connection mode enumerates under a new id and leaves the old
@@ -145,10 +166,15 @@ impl Tracker {
         let live: Vec<(String, Kind)> = self
             .known
             .iter()
-            .filter(|r| r.status != Status::NotConnected)
+            .filter(|r| r.status != Status::NotConnected && r.missed == 0)
             .map(|r| (r.name.clone(), r.kind))
             .collect();
-        self.known.retain(|r| r.status != Status::NotConnected || !live.contains(&(r.name.clone(), r.kind)));
+        // Within the grace window a missing row is still "dimmed", but a live row with the same
+        // name/kind means it was the same device on another link: drop the old one now.
+        self.known.retain(|r| {
+            (r.status != Status::NotConnected || !live.contains(&(r.name.clone(), r.kind)))
+                && (r.missed == 0 || !live.contains(&(r.name.clone(), r.kind)))
+        });
         self.known.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
         self.known.clone()
     }
@@ -165,10 +191,17 @@ mod tests {
     #[test]
     fn read_natively_matches_source_and_pid() {
         let with_id = |id: &str| Observation { id: id.into(), ..obs(State::Off) };
-        let o = [with_id("logi:0ab5:3:ff"), with_id("mchose:385d"), with_id("corsair:0a97"), with_id("hc:1b1c:2a08")];
+        let o = [
+            with_id("logi:0ab5:3:ff"),
+            with_id("mchose:385d"),
+            with_id("corsair:0a97"),
+            with_id("airoha:4b19"),
+            with_id("hc:1b1c:2a08"),
+        ];
         assert!(read_natively(&o, 0x0AB5));
         assert!(read_natively(&o, 0x385D));
         assert!(read_natively(&o, 0x0A97));
+        assert!(read_natively(&o, 0x4B19));
         assert!(!read_natively(&o, 0x2A08)); // only HeadsetControl has it
         assert!(!read_natively(&o, 0x0AB6));
     }
@@ -191,9 +224,13 @@ mod tests {
     }
 
     #[test]
-    fn vanished_device_is_not_connected() {
+    fn vanished_device_keeps_reading_during_grace_then_disconnects() {
         let mut t = Tracker::default();
         t.update(vec![obs(State::Battery { percent: 80, charging: false })]);
+        for _ in 0..GRACE_SCANS - 1 {
+            let r = t.update(vec![]);
+            assert_eq!(r[0].status, Status::Battery { percent: 80, charging: false, stale: true });
+        }
         assert_eq!(t.update(vec![])[0].status, Status::NotConnected);
     }
 

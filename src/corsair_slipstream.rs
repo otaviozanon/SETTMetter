@@ -16,6 +16,7 @@
 
 use crate::device::{Kind, Observation, State};
 use crate::diag;
+use crate::hidutil::drain_buf as flush;
 use crate::probe;
 use hidapi::{HidApi, HidDevice};
 use std::collections::HashMap;
@@ -167,11 +168,6 @@ fn send(dev: &HidDevice, data: &[u8]) -> hidapi::HidResult<()> {
     let mut r = [0u8; 65];
     r[1..1 + data.len()].copy_from_slice(data);
     dev.write(&r).map(|_| ())
-}
-
-fn flush(dev: &HidDevice, buf: &mut [u8]) -> hidapi::HidResult<()> {
-    while dev.read_timeout(buf, 5)? > 0 {}
-    Ok(())
 }
 
 #[cfg(test)]

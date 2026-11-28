@@ -21,6 +21,7 @@
 
 use crate::device::{Kind, Observation, State};
 use crate::diag;
+use crate::hidutil::drain_buf as flush;
 use hidapi::{HidApi, HidDevice};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -45,6 +46,10 @@ const V2_DEVICES: &[(u16, &str)] = &[
     (0x2A08, "Corsair VOID WIRELESS V2"),
     (0x2A02, "Corsair VIRTUOSO MAX WIRELESS"),
     (0x0A97, "Corsair HS80 MAX WIRELESS"),
+    (0x0A64, "Corsair HS80 RGB Wireless"),
+    (0x0A62, "Corsair wireless headset"),
+    (0x0A3E, "Corsair wireless headset"),
+    (0x0A3D, "Corsair wireless headset"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -212,11 +217,6 @@ fn send(dev: &HidDevice, endpoint: u8, command: u8) -> hidapi::HidResult<()> {
     let mut r = [0u8; 65];
     r[1..5].copy_from_slice(&[0x02, endpoint, 0x02, command]);
     dev.write(&r).map(|_| ())
-}
-
-fn flush(dev: &HidDevice, buf: &mut [u8]) -> hidapi::HidResult<()> {
-    while dev.read_timeout(buf, 5)? > 0 {}
-    Ok(())
 }
 
 fn percent(raw: u16) -> Option<u8> {

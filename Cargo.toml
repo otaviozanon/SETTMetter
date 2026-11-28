@@ -1,6 +1,6 @@
 [package]
 name = "SETTMetter"
-version = "1.5.2"
+version = "1.6.0"
 edition = "2024"
 description = "Wireless device battery levels and system monitoring on the Windows taskbar"
 license = "GPL-3.0-only"
@@ -12,7 +12,9 @@ serde_json = "1"
 # WinRT Bluetooth APIs.
 windows = { version = "0.58", features = [
     "Devices_Bluetooth",
+    "Devices_Bluetooth_Advertisement",
     "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
     "Data_Xml_Dom",
     "Devices_Power",
     "Foundation",
@@ -29,6 +31,7 @@ windows = { version = "0.58", features = [
 ] }
 # Plain Win32 (window, GDI, registry, SetupAPI, clipboard).
 windows-sys = { version = "0.59", features = [
+    "Win32_Devices_Communication",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Properties",
     "Win32_Foundation",
